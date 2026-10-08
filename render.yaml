@@ -1,0 +1,27 @@
+# Render Blueprint — Forge F1 Audit Demo (Apex Forge)
+# Apply via: Render Dashboard > New > Blueprint > connect repo containing this file.
+# Docs: https://render.com/docs/blueprint-spec
+#
+# COST: $0/mo on the free tier (512MB RAM / 0.1 CPU, sleeps after 15 min idle).
+# No secrets required. No persistent disk (audit jobs are ephemeral).
+
+services:
+  - type: web
+    name: forge-audit-demo
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    # Repo/bundle root must contain audit-demo/ and f1-audit-product/
+    # (see render/package.sh). If the repo nests them, set rootDir below.
+    # rootDir: .
+    healthCheckPath: /health
+    envVars:
+      - key: BIND
+        value: 0.0.0.0
+      - key: F1_DIR
+        value: /app/f1-audit-product
+      - key: F1_SAMPLES
+        value: /app/f1-audit-product/samples
+      - key: AUDIT_PYBIN
+        value: /usr/local/bin/python
+      # PORT is injected by Render automatically — do not set it here.
