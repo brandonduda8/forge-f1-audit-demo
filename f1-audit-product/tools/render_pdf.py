@@ -61,7 +61,8 @@ def md_to_html(md):
         elif re.match(r"^(\d+\.|-|\*) ", ln):
             if not in_list:
                 out.append("<ul>"); in_list = True
-            out.append(f"<li>{md_inline(re.sub(r'^(\d+\.|-|\*) ', '', ln))}</li>")
+            item = re.sub(r"^(\d+\.|-|\*) ", "", ln)  # outside the f-string: backslashes there need Python 3.12+
+            out.append(f"<li>{md_inline(item)}</li>")
         elif ln.strip() == "":
             if in_list:
                 out.append("</ul>"); in_list = False
