@@ -276,10 +276,15 @@ def score(ev):
     for name, weight, ids in CATEGORIES:
         vals = [res[i]["score"] for i in ids if i in res and res[i]["score"] is not None]
         excluded = [i for i in ids if i not in res or (i in res and res[i]["score"] is None)]
-        s = round((sum(vals) / len(vals)) * 100) if vals else 0
+        # A category with no measured check gets no score (None), not a 0: a 0
+        # would be an invented failure. The total is re-weighted over the
+        # categories that were actually measured.
+        s = round((sum(vals) / len(vals)) * 100) if vals else None
         cats[name] = {"score": s, "weight": weight, "checks": {i: res[i] for i in ids if i in res},
                       "excluded": excluded}
-    total = round(sum(c["score"] * c["weight"] for c in cats.values()) / 100)
+    measured = [c for c in cats.values() if c["score"] is not None]
+    wsum = sum(c["weight"] for c in measured)
+    total = round(sum(c["score"] * c["weight"] for c in measured) / wsum) if wsum else 0
     grade = "A" if total >= 90 else "B" if total >= 75 else "C" if total >= 60 else "D" if total >= 40 else "F"
     return {"categories": cats, "total": total, "grade": grade, "check_scores": res}
 
@@ -331,7 +336,52 @@ IMPACT = {
 }
 
 
-def build_report(name, url, ev, sc, date_str, domain):
+# Neutral names for checks. Used for "What passed" and "Not measured", where the
+# failure titles in FIXES would read as a problem the site does not have.
+LABELS = {
+    "1.1": "Server response time (time to first byte)",
+    "1.5": "Homepage total download size",
+    "1.6": "Image sizes and formats",
+    "1.7": "Render-blocking scripts and stylesheets",
+    "2.1": "Mobile viewport setting",
+    "2.4": "Tap-to-call phone link",
+    "3.1": "Page title",
+    "3.2": "Meta description",
+    "3.3": "Main heading (H1) structure",
+    "3.4": "LocalBusiness schema markup",
+    "3.5-linked": "Link to Google Business Profile",
+    "3.7": "HTTPS and certificate",
+    "3.8": "robots.txt and sitemap.xml",
+    "4.1": "Phone number in header",
+    "4.2": "Contact or quote form",
+    "4.3": "Call-to-action coverage",
+    "4.4": "Path from homepage to a quote",
+    "4.5": "Response-time promise",
+    "4.6": "Hours and service area",
+    "5.2": "On-site reviews",
+    "6.1": "Owner / about identity",
+    "6.2": "License and insurance statement",
+    "6.3": "Real vs stock photos",
+    "6.4": "Social profile links",
+    "6.5": "Guarantee or warranty",
+    "6.6": "Broken links",
+}
+
+SELFSERVE_CLOSING = [
+    "## WHAT TO DO NEXT",
+    "",
+    "**Work down the list.** Fix the findings in order: the top of the list costs you the most. Most items marked DIY take under an hour in a site builder.",
+    "",
+    "**Hand it to your web person.** Every finding names what was measured and how, so a developer can check it and fix it without guessing.",
+    "",
+    "**Re-check for free.** After you make changes, run the free check on the Apex Forge site again to see your new grade.",
+    "",
+    "---",
+    "",
+    "*This report is automated information about your public website, not professional advice. It makes no promise about search rankings or sales.*",
+]
+
+def build_report(name, url, ev, sc, date_str, domain, variant="snapshot"):
     checks = sc["check_scores"]
     fails = [(cid, d) for cid, d in checks.items() if d["score"] is not None and d["score"] < 1]
     sev_rank = {"CRITICAL": 0, "MAJOR": 1, "MINOR": 2}
@@ -352,10 +402,12 @@ def build_report(name, url, ev, sc, date_str, domain):
     A("| Category | Score | Weight | What it means |")
     A("|---|---|---|---|")
     for cname, _w, _ids in CATEGORIES:
-        A(f"| {cname} | {sc['categories'][cname]['score']}/100 | {sc['categories'][cname]['weight']} | {CAT_LINES[cname]} |")
+        cs = sc['categories'][cname]['score']
+        A(f"| {cname} | {'not measured' if cs is None else str(cs) + '/100'} | {sc['categories'][cname]['weight']} | {CAT_LINES[cname]} |")
     A("")
     # plain english
-    worst = sorted([c for c in CATEGORIES], key=lambda c: sc["categories"][c[0]]["score"])[:2]
+    worst = sorted([c for c in CATEGORIES if sc["categories"][c[0]]["score"] is not None],
+                   key=lambda c: sc["categories"][c[0]]["score"])[:2]
     worst_txt = "; ".join(f"{c[0]} scored {sc['categories'][c[0]]['score']}/100" for c in worst)
     A("**In plain English:** " +
       f"This site scored {sc['total']}/100 (Grade {sc['grade']}). " +
@@ -384,19 +436,25 @@ def build_report(name, url, ev, sc, date_str, domain):
             A("")
     else:
         A("## NO FINDINGS BELOW THE BAR")
-        A("Every measured check passed. Keep the fundamentals maintained; the Audit + Fix Plan adds a side-by-side with two local competitors.")
+        A("Every measured check passed. Keep the fundamentals maintained." + ("" if variant == "selfserve" else " The Audit + Fix Plan adds a side-by-side with two local competitors."))
         A("")
     if passes:
         A("**What passed:**")
         for cid in passes:
-            A(f"- {cid} {FIXES[cid][1]}: {checks[cid]['why']}")
+            A(f"- {cid} {LABELS.get(cid, cid)}: {checks[cid]['why']}")
         A("")
     A("**Not measured:**")
+    for cid, d in sorted(checks.items(), key=lambda x: x[0]):
+        if d["score"] is None:
+            A(f"- {cid} {LABELS.get(cid, cid)} -- {d['why']}. Excluded from the score, not estimated.")
     for cid, label, why in NOT_MEASURED:
         A(f"- {cid} {label} -- {why}. Excluded from the score, not estimated.")
     A("")
     A("---")
     A("")
+    if variant == "selfserve":
+        L.extend(SELFSERVE_CLOSING)
+        return "\n".join(L)
     A("## WHAT HAPPENS NEXT")
     A("")
     A("**Fix it yourself.** Everything above is yours to keep. The ranked list is the roadmap.")

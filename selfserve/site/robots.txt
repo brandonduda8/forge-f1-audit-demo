@@ -1,0 +1,7 @@
+# Apex Forge Website Checkup
+User-agent: *
+Allow: /
+
+# Sitemap: replace YOUR-DOMAIN with the real site domain once it is live,
+# add a sitemap.xml, then remove the leading "# " from the line below.
+# Sitemap: https://YOUR-DOMAIN/sitemap.xml
