@@ -221,7 +221,8 @@ def parse_config(content):
     return json.loads(m.group(1))
 
 
-GOOD = {"APEX_API_BASE": "https://forge-api.onrender.com/", "APEX_PAYMENT_LINK": "https://buy.stripe.com/test_abc123"}
+GOOD = {"APEX_API_BASE": "https://forge-api.onrender.com/", "APEX_PAYMENT_LINK": "https://buy.stripe.com/test_abc123",
+        "APEX_SUPPORT_EMAIL": "help@example.com"}
 
 
 @pytest.mark.parametrize("bad", [
@@ -254,11 +255,14 @@ def test_build_config_writes_valid_config():
                    "price": "$29", "supportEmail": "help@example.com"}
 
 
-def test_build_config_custom_price_and_no_email():
+def test_build_config_custom_price_and_email_required():
     proc, content = run_build({**GOOD, "APEX_PRICE": "$39"})
     assert proc.returncode == 0, proc.stderr
     cfg = parse_config(content)
-    assert cfg["price"] == "$39" and cfg["supportEmail"] == ""
+    assert cfg["price"] == "$39" and cfg["supportEmail"] == "help@example.com"
+    no_email = {k: v for k, v in GOOD.items() if k != "APEX_SUPPORT_EMAIL"}
+    proc, _ = run_build(no_email)
+    assert proc.returncode != 0 and "APEX_SUPPORT_EMAIL" in proc.stderr
 
 
 def test_build_config_example_mode_needs_no_env():

@@ -120,7 +120,11 @@ section + section { border-top: 1px solid var(--border); }
 .check-form { margin-top: 20px; max-width: 640px; }
 .check-form label { display: block; font-weight: 600; margin-bottom: 6px; }
 .field-row { display: flex; flex-direction: column; gap: 10px; }
-input[type="url"], input[type="text"] {
+#find-form { max-width: 480px; margin-top: 16px; }
+#find-form label { display: block; font-weight: 600; margin: 14px 0 6px; }
+#find-form .btn { margin-top: 16px; }
+.find-result { margin-top: 16px; }
+input[type="url"], input[type="text"], input[type="email"] {
   width: 100%;
   font: inherit;
   padding: 12px 14px;
@@ -130,7 +134,7 @@ input[type="url"], input[type="text"] {
   color: var(--text);
   min-height: 48px;
 }
-input[type="url"]:focus-visible { border-color: var(--focus); }
+input[type="url"]:focus-visible, input[type="text"]:focus-visible, input[type="email"]:focus-visible { border-color: var(--focus); }
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center;

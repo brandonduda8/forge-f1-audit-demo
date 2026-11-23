@@ -5,6 +5,8 @@
   "use strict";
 
   var SEVERITIES = ["critical", "high", "medium", "low"];
+  /* the checker's own levels, mapped onto the page's colours */
+  var SEVERITY_ALIASES = { major: "high", minor: "medium" };
   var WAKE_MESSAGE = "Waking up the checker — the first check of the hour can take up to a minute.";
   var NETWORK_MESSAGE = "We couldn't reach the checker. Check your connection and try again in a moment.";
 
@@ -70,6 +72,7 @@
 
   function severityKey(value) {
     var s = String(value || "").toLowerCase();
+    if (SEVERITY_ALIASES[s]) return SEVERITY_ALIASES[s];
     return SEVERITIES.indexOf(s) >= 0 ? s : "low";
   }
 
@@ -85,7 +88,7 @@
 
   function scoreText(value) {
     var n = num(value);
-    if (n === null) return "—";
+    if (n === null) return "not measured";
     return String(Math.max(0, Math.min(100, Math.round(n))));
   }
 

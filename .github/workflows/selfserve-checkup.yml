@@ -1,7 +1,8 @@
 name: selfserve-checkup
 # Tests the $29 checkup. Runs on pull requests that touch it, or by hand.
 # The "public smoke" step runs the FREE (light) check against three large public
-# sites: exactly three polite GET requests per site (homepage, robots.txt, sitemap.xml).
+# sites: exactly three polite GET requests per site (homepage, robots.txt, sitemap.xml),
+# then one paid-mode report on example.com (a one-page site, so only a handful of requests).
 on:
   pull_request:
     paths: ["selfserve/**", "audit-demo/**", "f1-audit-product/**", "requirements.txt", ".github/workflows/selfserve-checkup.yml"]
@@ -39,6 +40,18 @@ jobs:
               assert d.get("requests_made", 0) <= 3, (f, d.get("requests_made"))
               assert d.get("ok") or d.get("fatal"), (f, d)
               print(f, "ok" if d.get("ok") else "fatal", d.get("grade"), d.get("score"), d.get("requests_made"))
+          PY
+      - name: Public smoke (paid report on example.com, capped at 90 requests)
+        run: |
+          python -I selfserve/api/runner.py full https://example.com/ > smoke/full-example.com.json
+          python - <<'PY'
+          import json
+          d = json.load(open("smoke/full-example.com.json"))
+          assert d["ok"] and d["requests_made"] <= 90, d
+          rep = d["report"]
+          assert rep["categories"] and "markdown" in d
+          print("full example.com", d["grade"], d["score"], d["requests_made"], "requests,",
+                len(rep["findings"]), "findings,", len(rep["passed"]), "passed,", len(rep["not_measured"]), "not measured")
           PY
       - uses: actions/upload-artifact@v4
         if: always()

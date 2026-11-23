@@ -5,7 +5,8 @@ Reads these environment variables:
   APEX_API_BASE       required  https URL of the checker API (no trailing slash needed)
   APEX_PAYMENT_LINK   required  Stripe Payment Link, must be https://buy.stripe.com/...
   APEX_PRICE          optional  price label shown on the page (default "$29")
-  APEX_SUPPORT_EMAIL  optional  support address shown on the legal pages
+  APEX_SUPPORT_EMAIL  required  address for refund and privacy requests, shown on the legal
+                                pages (a buyer must always have a way to reach the seller)
 
 Usage:
   python3 build_config.py            # validate env vars, write config.js
@@ -27,7 +28,7 @@ EXAMPLE = {
     "apiBase": "https://your-checker-api.example.invalid",
     "paymentLink": "https://buy.stripe.com/test_REPLACE_ME",
     "price": "$29",
-    "supportEmail": "",
+    "supportEmail": "support@example.invalid",
 }
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
@@ -72,7 +73,9 @@ def build(env):
         raise ConfigError("APEX_PRICE must be a short label like $29.")
 
     email = (env.get("APEX_SUPPORT_EMAIL") or "").strip()
-    if email and not EMAIL_RE.match(email):
+    if not email:
+        raise ConfigError("APEX_SUPPORT_EMAIL is not set. Buyers need an address for refund requests.")
+    if not EMAIL_RE.match(email):
         raise ConfigError("APEX_SUPPORT_EMAIL does not look like an email address.")
 
     return {"apiBase": api, "paymentLink": pay, "price": price, "supportEmail": email}

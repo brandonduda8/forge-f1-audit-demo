@@ -98,16 +98,16 @@
       <span class="example-label">Example from a fictional test site</span>
       <article class="finding sev-border-critical">
         <div><span class="sev sev-critical">Critical</span> <span class="muted small">Check 2.4</span></div>
-        <h3>Your phone number can't be tapped to call</h3>
+        <h3>No tap-to-call button</h3>
         <dl>
           <dt>What we measured</dt>
-          <dd>The homepage shows a phone number as plain text, and has 0 tap-to-call (tel:) links.</dd>
+          <dd>no tel: links on homepage</dd>
           <dt>Why it matters</dt>
-          <dd>Visitors on a phone have to copy the number by hand to call you, and some won't bother.</dd>
+          <dd>If your number is not a tap-to-call link, a phone visitor has to copy it by hand, and some won't bother.</dd>
           <dt>How to fix it</dt>
-          <dd>In your site editor, turn the phone number into a phone link (most editors call this "link to phone number").</dd>
+          <dd>Wrap the phone number in a tel: link (ideally a sticky call button on mobile) so a caller reaches you in one tap.</dd>
           <dt>Effort</dt>
-          <dd>About 10 minutes.</dd>
+          <dd>DIY, ~15 minutes</dd>
         </dl>
       </article>
     </div>
@@ -160,6 +160,7 @@
     <nav aria-label="Legal">
       <a href="privacy.html">Privacy</a>
       <a href="terms.html">Terms</a>
+      <a href="find.html">Find my report</a>
     </nav>
     <p>Apex Forge · Villa Park, Illinois</p>
   </div>

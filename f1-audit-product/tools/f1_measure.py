@@ -23,6 +23,9 @@ from bs4 import BeautifulSoup
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Forge-F1-Audit/1.0 (+public-audit)"
 MAX_RESOURCES = 150
+# titles of bot-check / interstitial pages served instead of the real homepage
+CHALLENGE_RE = re.compile(r"(just a moment|attention required|access denied|checking your browser|"
+                          r"verify you are human|are you a robot|ddos protection|security check|captcha)")
 
 def now(): return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -85,7 +88,20 @@ def measure(name, url, outdir, light=False):
         return ev
     html = r.text
     final = r.url
+    ev["homepage_status"] = r.status_code
+    ev["final_url"] = final
+    ev["redirects"] = len(getattr(r, "history", []) or [])
+    if r.status_code >= 400:
+        # an error page is not the site: grading it would report invented problems
+        ev["fatal"] = f"the homepage answered with an error (HTTP {r.status_code})"
+        json.dump(ev, open(os.path.join(outdir, f"{slugify(name)}-evidence.json"), "w"), indent=2)
+        return ev
     soup = BeautifulSoup(html, "lxml")
+    page_title = (soup.title.get_text(" ", strip=True) if soup.title else "").lower()
+    if CHALLENGE_RE.search(page_title):
+        ev["fatal"] = "the site showed a bot-check page instead of its homepage"
+        json.dump(ev, open(os.path.join(outdir, f"{slugify(name)}-evidence.json"), "w"), indent=2)
+        return ev
     text = soup.get_text(" ", strip=True)
     text_l = text.lower()
 

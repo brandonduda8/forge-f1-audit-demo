@@ -34,8 +34,9 @@ services:
     name: apex-checkup
     runtime: static
     rootDir: selfserve/site
-    buildCommand: python3 build_config.py
-    staticPublishPath: .
+    # publish only the pages, never tests or notes
+    buildCommand: python3 build_config.py && mkdir -p public && cp *.html *.css *.js robots.txt public/ && rm -f public/config.example.js
+    staticPublishPath: public
     headers:
       - path: /*
         name: X-Frame-Options
@@ -53,5 +54,5 @@ services:
         sync: false
       - key: APEX_PRICE
         value: $29
-      - key: APEX_SUPPORT_EMAIL     # optional: where refund requests go (shown on privacy and terms pages)
+      - key: APEX_SUPPORT_EMAIL     # required: where refund and privacy requests go (shown on privacy and terms pages)
         sync: false

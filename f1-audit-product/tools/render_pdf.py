@@ -18,7 +18,10 @@ def sanitize(s):
     return (s.replace("—", "--").replace("–", "-").replace("★", "*")
              .replace("©", "(c)").replace("→", "->").replace("≤", "<=")
              .replace("≥", ">=").replace("\u2019", "'").replace("\u201c", '"')
-             .replace("\u201d", '"').replace("\u2026", "..."))
+             .replace("\u201d", '"').replace("\u2026", "...").replace("\u2018", "'")
+             # the core PDF font is Latin-1 only: anything else (emoji, CJK) becomes "?"
+             # instead of crashing the render on a site with an unusual title
+             .encode("latin-1", "replace").decode("latin-1"))
 
 def md_inline(s):
     s = sanitize(s)

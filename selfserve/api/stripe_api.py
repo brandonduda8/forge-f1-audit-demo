@@ -6,11 +6,20 @@
   website the buyer typed into the payment link's custom field.
 * refund(payment_intent, session_id): POST /v1/refunds with an idempotency key
   derived from the session, so a double click can never refund twice.
+* mark_delivered(payment_intent): records on the payment itself (metadata
+  apex_report_delivered=1) that the report was delivered, so the "no refund
+  after delivery" rule survives a server restart.
+* find_sessions(email): paid sessions of our payment link for that email, so a
+  buyer who closed the tab can get back to their report without contacting us.
+
+The session is read with its PaymentIntent and latest charge expanded, so the
+server always knows from Stripe (not from memory) whether the payment was
+refunded and whether the report was delivered.
 
 Configuration comes from environment variables only (never from files):
-  STRIPE_SECRET_KEY        a restricted key (rk_...) with Checkout Sessions: Read
-                           and Refunds: Write. A full secret key works but is not
-                           recommended.
+  STRIPE_SECRET_KEY        a restricted key (rk_...) with Checkout Sessions: Read,
+                           PaymentIntents: Write, Charges and Refunds: Write.
+                           A full secret key works but is not recommended.
   STRIPE_PAYMENT_LINK_ID   plink_... of the $29 payment link (required)
   STRIPE_WEBSITE_FIELD     custom field key on the payment link (default "website")
   STRIPE_API_BASE          only for tests (default https://api.stripe.com)
@@ -18,6 +27,7 @@ Configuration comes from environment variables only (never from files):
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -70,6 +80,8 @@ def _request(method, path, form=None, idempotency_key=None):
             body = json.loads(e.read().decode())
         except Exception:
             body = {}
+        kind = "/".join(path.split("?")[0].split("/")[:3])     # e.g. /v1/checkout, never an id
+        sys.stderr.write(f"stripe {method} {kind} -> {e.code} {(body.get('error') or {}).get('code', '')}\n")
         if e.code >= 500 or e.code == 429:
             raise StripeUnavailable(f"Stripe answered {e.code}") from None
         return e.code, body
@@ -101,7 +113,8 @@ def get_paid_session(session_id, now=None):
     want_link = os.environ.get("STRIPE_PAYMENT_LINK_ID", "")
     if not want_link.startswith("plink_"):
         raise StripeUnavailable("payments are not configured on this server")
-    code, sess = _request("GET", "/v1/checkout/sessions/" + urllib.parse.quote(session_id))
+    code, sess = _request("GET", "/v1/checkout/sessions/" + urllib.parse.quote(session_id)
+                          + "?expand[]=payment_intent.latest_charge")
     if code == 404:
         raise PaymentError("We couldn't find a payment for this link.")
     if code != 200:
@@ -118,8 +131,59 @@ def get_paid_session(session_id, now=None):
     site = website_from_session(sess)
     if not site:
         raise PaymentError("No website was entered at checkout.")
+    pi = sess.get("payment_intent")
+    pi_obj = pi if isinstance(pi, dict) else {}
+    charge = pi_obj.get("latest_charge")
+    charge = charge if isinstance(charge, dict) else {}
+    meta = pi_obj.get("metadata") or {}
     return {"session_id": session_id, "website": site,
-            "payment_intent": sess.get("payment_intent"), "created": created}
+            "payment_intent": pi_obj.get("id") if pi_obj else pi, "created": created,
+            "refunded": bool(charge.get("refunded") or charge.get("amount_refunded")),
+            "delivered": meta.get("apex_report_delivered") == "1"}
+
+
+def mark_delivered(payment_intent):
+    """Best effort. Returns True when Stripe recorded it."""
+    if not (isinstance(payment_intent, str) and payment_intent.startswith("pi_")):
+        return False
+    try:
+        code, _ = _request("POST", "/v1/payment_intents/" + urllib.parse.quote(payment_intent),
+                           form={"metadata[apex_report_delivered]": "1"})
+    except StripeUnavailable:
+        return False
+    return code == 200
+
+
+EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,24}$")
+
+
+def find_sessions(email, now=None):
+    """[{session_id, website, created}] paid with our link by this email, newest first."""
+    if not EMAIL_RE.match(email or ""):
+        raise PaymentError("Enter the email address you paid with.")
+    want_link = os.environ.get("STRIPE_PAYMENT_LINK_ID", "")
+    if not want_link.startswith("plink_"):
+        raise StripeUnavailable("payments are not configured on this server")
+    q = urllib.parse.urlencode({"payment_link": want_link, "customer_details[email]": email,
+                                "status": "complete", "limit": "20"})
+    code, body = _request("GET", "/v1/checkout/sessions?" + q)
+    if code != 200:
+        raise StripeUnavailable(f"Stripe answered {code}")
+    key, _ = _cfg()
+    mode = key_mode(key)
+    out = []
+    for sess in body.get("data") or []:
+        if sess.get("payment_link") != want_link or sess.get("payment_status") != "paid":
+            continue
+        if bool(sess.get("livemode")) != (mode == "live"):
+            continue
+        created = int(sess.get("created") or 0)
+        if (now or time.time()) - created > MAX_AGE_S or not SESSION_RE.match(sess.get("id") or ""):
+            continue
+        out.append({"session_id": sess["id"], "website": website_from_session(sess) or "",
+                    "created": created})
+    out.sort(key=lambda x: -x["created"])
+    return out
 
 
 def refund(payment_intent, session_id):

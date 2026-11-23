@@ -22,8 +22,8 @@ from helpers import FakeStripe, serve_site  # noqa: E402
 
 ORIGIN = "https://checkup.example"
 LINK = "plink_test_checkup"
-GOOD, UNPAID, OTHER_LINK, OLD, DOWN, LIVE_ON_TEST, NOSITE = (
-    "cs_test_" + x * 24 for x in "abcdefg")
+GOOD, UNPAID, OTHER_LINK, OLD, DOWN, LIVE_ON_TEST, NOSITE, DELIVERED, FORBID = (
+    "cs_test_" + x * 24 for x in "abcdefghi")
 
 
 def free_port():
@@ -59,7 +59,10 @@ def stack():
     stripe = FakeStripe()
     roof, roof_url = serve_site("example-roofing")
     plumb, plumb_url = serve_site("sample-plumbing")
-    stripe.add(GOOD, roof_url + "/")
+    stripe.add(GOOD, roof_url + "/", pi="pi_test_good", email="owner@roof.example")
+    stripe.add(DELIVERED, roof_url + "/", pi="pi_test_delivered")
+    stripe.pis["pi_test_delivered"]["metadata"]["apex_report_delivered"] = "1"   # delivered before a restart
+    stripe.add(FORBID, roof_url + "/forbidden", pi="pi_test_forbid")
     stripe.add(UNPAID, roof_url + "/", paid=False)
     stripe.add(OTHER_LINK, roof_url + "/", link="plink_test_someone_else")
     stripe.add(OLD, roof_url + "/", created=time.time() - 31 * 24 * 3600)
@@ -71,7 +74,7 @@ def stack():
            "SITE_ORIGIN": ORIGIN, "STRIPE_SECRET_KEY": "rk_test_fake_key_for_tests",
            "STRIPE_PAYMENT_LINK_ID": LINK, "STRIPE_API_BASE": stripe.base,
            "SELFSERVE_TEST_ALLOW_LOOPBACK": "1", "LIMIT_FREE_PER_SITE": "50",
-           "LIMIT_FREE_PER_IP": "4"}
+           "LIMIT_FREE_PER_IP": "4", "PAID_WORKERS": "2"}
     proc = subprocess.Popen([sys.executable, "-I", os.path.join(API, "server.py")], env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     base = f"http://127.0.0.1:{port}"
@@ -112,7 +115,7 @@ def test_free_check_bad_input(stack):
     code, _, body = jcall(stack["base"], "/api/check", {"url": "javascript:alert(1)"})
     assert code == 400 and not body["ok"]
     code, _, body = jcall(stack["base"], "/api/check", {"url": "http://127.0.0.1:9/"})
-    assert code == 422 and "couldn't load" in body["error"]
+    assert code == 422 and "couldn't check" in body["error"]
 
 
 def test_free_check_rate_limited_per_ip(stack):
@@ -138,6 +141,28 @@ def test_paid_report_end_to_end(stack):
     code, h, pdf = call(stack["base"], body["pdf_url"])
     assert code == 200 and h["Content-Type"] == "application/pdf" and pdf[:5] == b"%PDF-" and len(pdf) > 5000
     assert "attachment" in h["Content-Disposition"]
+    # delivery is recorded on the payment itself, so it survives a restart
+    assert ("pi_test_good", {"metadata[apex_report_delivered]": ["1"]}) in stack["stripe"].pi_updates
+
+
+def test_parallel_loads_share_one_run(stack):
+    import threading
+    sid = "cs_test_" + "p" * 24
+    stack["stripe"].add(sid, stack["plumb"] + "/", pi="pi_test_parallel")
+    out = []
+    ts = [threading.Thread(target=lambda: out.append(jcall(stack["base"], "/api/report?session_id=" + sid)))
+          for _ in range(3)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert [c for c, _, _ in out] == [200, 200, 200]
+    assert len({json.dumps(b["report"], sort_keys=True) for _, _, b in out}) == 1
+    marks = [u for u in stack["stripe"].pi_updates if u[0] == "pi_test_parallel"]
+    assert len(marks) == 1     # one run, one delivery mark
+
+
+def test_error_homepage_is_not_graded_and_is_refundable(stack):
+    code, _, body = jcall(stack["base"], "/api/report?session_id=" + FORBID)
+    assert code == 422 and body["refundable"] is True and "HTTP 403" in body["error"]
 
 
 @pytest.mark.parametrize("sid,code", [
@@ -159,12 +184,33 @@ def test_unreachable_site_offers_and_issues_one_refund(stack):
     assert len({h.get("Idempotency-Key") for h, _ in refunds}) == 1          # one refund, replayed
     assert all(f["payment_intent"] == ["pi_test_down"] for _, f in refunds)
     assert stack["stripe"].auth_seen == {"Bearer rk_test_fake_key_for_tests"}
+    # once refunded (Stripe says so), the report link stops working
+    code, _, body = jcall(stack["base"], "/api/report?session_id=" + DOWN)
+    assert code == 402 and "refunded" in body["error"]
 
 
 def test_no_refund_after_delivered_report(stack):
     code, _, body = jcall(stack["base"], "/api/refund", {"session_id": GOOD})
     assert code == 409 and not body["ok"]
-    assert all(f["payment_intent"] != ["pi_test_1"] for _, f in stack["stripe"].refunds)
+    # not in this server's memory, but Stripe says the report was delivered
+    code, _, body = jcall(stack["base"], "/api/refund", {"session_id": DELIVERED})
+    assert code == 409 and not body["ok"]
+    assert all(f["payment_intent"][0] not in ("pi_test_good", "pi_test_delivered")
+               for _, f in stack["stripe"].refunds)
+
+
+def test_find_my_report(stack):
+    roof_host = stack["roof"].split("//")[1]
+    code, _, body = jcall(stack["base"], "/api/find", {"email": "owner@roof.example", "website": stack["roof"]})
+    assert code == 200 and body["reports"][0]["path"] == "report.html?session_id=" + GOOD, body
+    assert body["reports"][0]["site"] == roof_host.split(":")[0]
+    # right email, wrong website: nothing (an email alone never lists someone's purchases)
+    code, _, body = jcall(stack["base"], "/api/find", {"email": "owner@roof.example", "website": "other.example"})
+    assert code == 404 and "reports" not in body
+    code, _, body = jcall(stack["base"], "/api/find", {"email": "not-an-email", "website": "x.example"})
+    assert code == 400
+    q = stack["stripe"].lists[0]
+    assert q["payment_link"] == [LINK] and q["customer_details[email]"] == ["owner@roof.example"]
 
 
 def test_unknown_routes_and_bad_bodies(stack):
@@ -203,3 +249,33 @@ def test_site_renders_real_api_output(stack, tmp_path):
                        capture_output=True, text=True, timeout=60)
     assert p.returncode == 0, p.stdout + p.stderr
     print(p.stdout)
+
+
+def test_pdf_survives_emoji_and_non_latin_text(tmp_path):
+    md = tmp_path / "r.md"
+    md.write_text("# Report for \U0001F680 Caf\u00e9 \u6771\u4eac\n\nTitle: \u201cBest\u201d \U0001F600\n")
+    pdf = tmp_path / "r.pdf"
+    p = subprocess.run([sys.executable, "-I", os.path.join(API, "..", "..", "f1-audit-product", "tools", "render_pdf.py"),
+                        str(md), str(pdf)], capture_output=True, text=True, timeout=60)
+    assert p.returncode == 0, p.stderr
+    assert pdf.read_bytes()[:5] == b"%PDF-"
+
+
+def test_static_publish_excludes_tests_and_notes(tmp_path):
+    """Runs the static site's build command from render.yaml in a copy of the site."""
+    import re
+    import shutil
+    repo = os.path.abspath(os.path.join(API, "..", ".."))
+    yml = open(os.path.join(repo, "render.yaml")).read()
+    block = yml[yml.index("name: apex-checkup\n"):]
+    cmd = re.search(r"buildCommand: (.+)", block).group(1).strip()
+    publish = re.search(r"staticPublishPath: (\S+)", block).group(1)
+    work = tmp_path / "site"
+    shutil.copytree(os.path.join(repo, "selfserve", "site"), work)
+    env = {"PATH": os.environ["PATH"], "APEX_API_BASE": "https://api.example.test",
+           "APEX_PAYMENT_LINK": "https://buy.stripe.com/test_x1", "APEX_SUPPORT_EMAIL": "help@example.com"}
+    p = subprocess.run(["bash", "-c", cmd], cwd=work, env=env, capture_output=True, text=True, timeout=60)
+    assert p.returncode == 0, p.stderr
+    out = set(os.listdir(work / publish))
+    assert {"index.html", "report.html", "find.html", "config.js", "common.js", "style.css"} <= out
+    assert not out & {"tests", "README.md", "build_config.py", ".gitignore", "config.example.js"}

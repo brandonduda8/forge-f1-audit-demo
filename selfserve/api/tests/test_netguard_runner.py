@@ -84,6 +84,8 @@ def test_body_cap_and_request_budget(monkeypatch):
     ("  Example.COM/page ", "https://example.com/page"),
     ("http://example.com", "http://example.com/"),
     ("https://example.com:443/x?y=1", "https://example.com:443/x?y=1"),
+    ("example.com:443/x", "https://example.com:443/x"),
+    ("HTTPS://Example.com", "https://example.com/"),
 ])
 def test_normalize_url_ok(raw, want, monkeypatch):
     monkeypatch.delenv("SELFSERVE_TEST_ALLOW_LOOPBACK", raising=False)
@@ -161,6 +163,41 @@ def test_loopback_target_refused_in_production_mode():
     srv.shutdown()
     assert not res["ok"]   # port is not 80/443, and 127.0.0.1 is not public
     assert res.get("input_error") or res.get("fatal")
+
+
+@pytest.mark.parametrize("path,why", [("/forbidden", "HTTP 403"), ("/challenge", "bot-check")])
+def test_error_or_bot_check_homepage_is_fatal_not_graded(path, why):
+    srv, base = serve_site("example-roofing")
+    res = run_runner("light", base + path)
+    srv.shutdown()
+    assert res["ok"] is False and res["fatal"] is True and "score" not in res
+    assert why in res["error"]
+
+
+def test_slow_drip_homepage_stops_at_deadline():
+    srv, base = serve_site("example-roofing")
+    import time
+    env = {"PATH": os.environ["PATH"], "SELFSERVE_TEST_ALLOW_LOOPBACK": "1", "RUNNER_TEST_DEADLINE": "3"}
+    t0 = time.time()
+    p = subprocess.run([sys.executable, "-I", os.path.join(API, "runner.py"), "light", base + "/slow"],
+                       capture_output=True, text=True, timeout=60, env=env)
+    took = time.time() - t0
+    srv.shutdown()
+    res = json.loads(p.stdout.strip().splitlines()[-1])
+    assert res["ok"] is False and res["fatal"] and "too long" in res["error"]
+    assert took < 20
+
+
+def test_https_without_cert_inspection_is_not_measured_in_full_mode():
+    ev = {"checks": {"3.7": {"value": {"https": True, "cert": {"valid": False, "error": "x"}}, "method": "m"},
+                     "3.8": {"value": {"robots": 200, "sitemap_xml": None}, "method": "m"}}}
+    out = runner.sanitize_evidence(ev, [], "full")
+    assert out["checks"]["3.7"]["status"] == "NOT_MEASURED"
+    assert out["checks"]["3.8"]["status"] == "NOT_MEASURED"
+
+
+def test_runner_sets_a_memory_ceiling():
+    assert 100 * 1024 * 1024 <= runner.MEM_LIMIT_BYTES <= 400 * 1024 * 1024
 
 
 def test_unreachable_site_is_fatal_not_scored():

@@ -28,11 +28,18 @@ report.html --GET /api/report--> API --Stripe: is this session paid, from our li
 ## Safety
 - `api/netguard.py` refuses private, loopback, link-local and metadata addresses and every port but 80/443,
   checked on the exact address dialled (so redirects and DNS rebinding can't get around it).
-- Body cap 5 MB; free check = exactly 3 requests; paid report <= 90 requests and 75 seconds.
+- Body cap 2 MB; free check = exactly 3 requests; paid report <= 90 requests and 75 seconds, enforced by a
+  timer too, so a site that drips bytes slowly can't hold a worker. Each run is capped at 300 MB of memory
+  (a near-2 MB homepage peaked at 174 MB in testing).
+- A homepage that answers with an HTTP error or a bot-check page is never graded; the paid run becomes refundable.
 - Each run is a separate process with no secrets in its environment and no proxy settings.
 - Stripe: the session must be complete, paid, from our payment link, same test/live mode as the key, and under
   30 days old. The website comes from the paid session, so one payment can't audit other sites.
-- Refunds: only when the paid run could not reach the site; idempotent per session.
+- Refunds: only when the paid run could not reach the site; idempotent per session. Refund and delivery
+  state live on the Stripe payment (charge refunded; PaymentIntent metadata `apex_report_delivered`), so a
+  restart can't reopen a refund for a delivered report, and a refunded link stops working.
+- Free checks and paid reports have separate one-at-a-time worker pools; parallel loads of one report share one run.
+- `POST /api/find` (email + website) gets a lost report link back from Stripe, so a buyer never has to write in.
 - Rate limits: free check 5 per visitor and 3 per website per hour, 60 total per hour.
 
 ## Run the tests

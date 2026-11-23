@@ -20,6 +20,9 @@ the run, and (3) turns anything a cap or the guard cut short into
 """
 import json
 import os
+import re
+import resource
+import signal
 import sys
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -38,6 +41,9 @@ LIMITS = {
 }
 # checks whose value can be partial if a cap or the guard cut the run short
 CAP_SENSITIVE = ("1.5", "1.6", "4.3", "4.4", "6.6")
+# memory ceiling for one run (Render's free instance has 512 MB for everything)
+MEM_LIMIT_BYTES = int(os.environ.get("CHECKUP_MEM_MB", "300")) * 1024 * 1024
+SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
 SEV_RANK = {"CRITICAL": 0, "MAJOR": 1, "MINOR": 2}
 
 
@@ -46,8 +52,8 @@ def normalize_url(raw):
     s = (raw or "").strip()
     if not s or len(s) > 300 or any(c.isspace() for c in s):
         raise ValueError("Enter a website address like example.com")
-    if "://" not in s:
-        s = "https://" + s
+    if not SCHEME_RE.match(s) or re.match(r"^[^/]+:\d+(/|$)", s):
+        s = "https://" + s     # "example.com" or "example.com:443/x" (host:port, no scheme)
     p = urlparse(s)
     if p.scheme not in ("http", "https"):
         raise ValueError("Only http and https websites can be checked")
@@ -101,14 +107,26 @@ def sanitize_evidence(ev, events, mode):
             c66["note"] = (c66.get("note") or "") + f" ({dropped} link(s) not checkable from here were left out)"
     # 3.7 in light mode: no direct TLS check is made, so HTTPS is confirmed but
     # the certificate is not. Say so instead of scoring it as a problem.
-    if mode == "light" and "3.7" in checks:
+    if "3.7" in checks:
         v = checks["3.7"].get("value") or {}
-        if v.get("https"):
-            _mark_not_measured(ev, "3.7", "the free check confirms HTTPS but does not inspect the certificate")
+        cert = v.get("cert") or {}
+        if v.get("https") and not cert.get("valid"):
+            # the page itself loaded over verified HTTPS; only the separate
+            # certificate inspection is missing, which is not a site problem
+            why = ("the free check confirms HTTPS but does not inspect the certificate" if mode == "light"
+                   else "HTTPS loaded fine; the separate certificate inspection did not complete")
+            _mark_not_measured(ev, "3.7", why)
+    c38 = checks.get("3.8")
+    if c38 and isinstance(c38.get("value"), dict):
+        v = c38["value"]
+        if v.get("robots") is None or v.get("sitemap_xml") is None:
+            _mark_not_measured(ev, "3.8", "robots.txt or sitemap.xml could not be fetched in this run")
     if blocked and ev.get("fatal"):
         ev["fatal"] = "that address does not point to a public website"
     elif "too_large" in events and ev.get("fatal"):
-        ev["fatal"] = "the homepage is larger than 5 MB, too large to check"
+        ev["fatal"] = "the homepage is too large to check (over %d MB)" % (netguard.MAX_BODY_BYTES // (1024 * 1024))
+    elif "budget:time" in events and ev.get("fatal"):
+        ev["fatal"] = "the homepage took too long to load"
     return ev
 
 
@@ -137,7 +155,13 @@ def run(mode, raw_url):
     if mode not in LIMITS:
         raise ValueError("mode must be light or full")
     url = normalize_url(raw_url)
-    lim = LIMITS[mode]
+    lim = dict(LIMITS[mode])
+    if os.environ.get("SELFSERVE_TEST_ALLOW_LOOPBACK") == "1" and os.environ.get("RUNNER_TEST_DEADLINE"):
+        lim["deadline_s"] = int(os.environ["RUNNER_TEST_DEADLINE"])   # tests only
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (MEM_LIMIT_BYTES, MEM_LIMIT_BYTES))
+    except (ValueError, OSError):
+        pass
     netguard.install()
     import f1_measure
     import audit_pipeline as pipe
@@ -145,18 +169,40 @@ def run(mode, raw_url):
     f1_measure.requests = client            # every get/head goes through the guard
     f1_measure.MAX_RESOURCES = lim["max_resources"] or f1_measure.MAX_RESOURCES
     host = urlparse(url).hostname
+
+    def _too_slow(_sig, _frm):
+        # a site that drips bytes slowly can outlast per-read timeouts; this
+        # fires at the deadline and then every second until the run ends
+        if "budget:time" not in client.events:
+            client.events.append("budget:time")
+        raise netguard.BudgetExceeded("BUDGET time limit reached")
+
+    signal.signal(signal.SIGALRM, _too_slow)
+    signal.setitimer(signal.ITIMER_REAL, lim["deadline_s"], 1.0)
     import tempfile
-    with tempfile.TemporaryDirectory() as tmp:
-        import io
-        import contextlib
-        with contextlib.redirect_stdout(io.StringIO()):
-            ev = f1_measure.measure(host, url, tmp, light=(mode == "light"))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            import io
+            import contextlib
+            with contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    ev = f1_measure.measure(host, url, tmp, light=(mode == "light"))
+                except MemoryError:
+                    ev = {"fatal": "the homepage is too large to check", "checks": {}}
+                except netguard.BudgetExceeded:
+                    ev = {"fatal": "the homepage took too long to load", "checks": {}}
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
     ev = sanitize_evidence(ev, client.events, mode)
     base = {"site": host, "url": url, "mode": mode, "measured_at": ev.get("measured_at"),
             "requests_made": client.count}
     if ev.get("fatal"):
         return dict(base, ok=False, fatal=True,
-                    error=f"We couldn't load {host}: {ev['fatal']}.")
+                    error=f"We couldn't check {host}: {ev['fatal']}.")
+    final_host = urlparse(ev.get("final_url") or url).hostname
+    if final_host and final_host != host:
+        base["final_url"] = ev["final_url"]          # say which site was really checked
+    base["redirects"] = ev.get("redirects", 0)
     sc = pipe.score(ev)
     rep = structured(ev, sc, pipe)
     out = dict(base, ok=True, score=sc["total"], grade=sc["grade"])
@@ -168,7 +214,6 @@ def run(mode, raw_url):
         return out
     from zoneinfo import ZoneInfo
     date_str = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
-    ev["evidence_file"] = "kept on the Apex Forge server for 30 days"
     out["report"] = rep
     out["markdown"] = pipe.build_report(host, url, ev, sc, date_str, host, variant="selfserve")
     return out

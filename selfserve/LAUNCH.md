@@ -22,9 +22,11 @@ Turn on "Test mode" (top right of the Stripe dashboard), then Payment Links → 
 
 ## 3. Restricted API key in TEST mode (about 5 min)
 Developers → API keys → **Create restricted key**, name it "apex-checkup":
-- Checkout Sessions: **Read**
-- Charges and Refunds: **Write** (this covers creating refunds)
+- Checkout Sessions: **Read** (checks the payment and finds lost report links)
+- PaymentIntents: **Write** (marks a payment "report delivered", so no refund after delivery, even after a restart)
+- Charges and Refunds: **Write** (the automatic refund for a site that can't be reached)
 - Everything else: None.
+Stripe's permission names can shift a little; pick the closest match. Step 5 tests all three.
 Copy the `rk_test_...` key. Paste it only into Render (step 4). Never into a file, chat or email.
 
 ## 4. Render (about 15 min)
@@ -37,8 +39,9 @@ Copy the `rk_test_...` key. Paste it only into Render (step 4). Never into a fil
    - `SITE_ORIGIN` = the static site address, e.g. `https://apex-checkup.onrender.com` (no trailing slash)
    - `APEX_API_BASE` = the API address, e.g. `https://apex-checkup-api.onrender.com`
    - `APEX_PAYMENT_LINK` = the `https://buy.stripe.com/test_...` link
-   - `APEX_SUPPORT_EMAIL` = an address for refund requests (a separate free inbox keeps your personal one private).
-     Leave it blank and the site only offers the automatic refund for unreachable sites.
+   - `APEX_SUPPORT_EMAIL` = an address for refund and privacy requests (required; a separate free inbox keeps
+     your personal one private). The terms promise a refund within 7 days to anyone who emails it, so
+     answering means one click in Stripe, no conversation.
    If you don't know the addresses yet, apply first, copy them from each service's page, then set the values and
    press **Manual Deploy** on both services.
 4. Back in Stripe, put the static site address into the payment link's redirect (step 2.3).
@@ -47,8 +50,12 @@ Copy the `rk_test_...` key. Paste it only into Render (step 4). Never into a fil
 1. Open the static site. Run the free check on a site you own (or any public site).
 2. Press Buy. On Stripe's test checkout use card `4242 4242 4242 4242`, any future date, any CVC, and type your website.
 3. You land on the report page. The first load can take up to a minute while the free server wakes.
-4. Press **Download PDF**. Then try a test purchase with website `nosuchsite.invalid` and press
-   **Refund me automatically**: the refund should show in Stripe's test Payments.
+4. Press **Download PDF**. In Stripe's test Payments, open that payment: its metadata should show
+   `apex_report_delivered = 1`.
+5. Open **Find my report** (bottom of any page), enter the test email and your website: it should link to the report.
+6. Try a test purchase with website `nosuchsite.invalid` and press **Refund me automatically**: the refund
+   should show in Stripe's test Payments, and reloading that report link should now say it was refunded.
+If any of these three fails with a permissions error, fix the key's permissions in step 3.
 
 ## 6. Read the legal pages (10 min)
 `privacy.html` and `terms.html` are drafts marked "not legal advice". Read them and change anything that isn't true for you.
@@ -68,5 +75,9 @@ Follow `NO-CONTACT-PLAN.md`: directory listings and SEO pages. No emails, DMs or
   production; if sales come, the $7/month paid instance removes the sleep.
 - Reports live in server memory. If Render restarts the server, the report link simply re-runs the check
   (links work for 30 days).
-- The checker makes at most 3 requests for a free check and at most 90 for a paid report, only to the
-  website entered, never to private network addresses.
+- The checker makes at most 3 page requests for a free check and at most 90 for a paid report (plus any
+  redirects the site itself sends, at most 5 each), only to the website entered, never to private network addresses.
+- The free check is limited per visitor address, per website and in total (60 an hour). On Render the visitor
+  address comes from a header a visitor could fake; that only weakens the per-visitor limit, the other two still cap it.
+- One free check and one paid report run at a time; others wait their turn (up to 30 and 90 seconds).
+- A homepage that answers with an error, or a bot-check page, is not graded: the buyer gets the automatic refund.

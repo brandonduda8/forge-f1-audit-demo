@@ -7,6 +7,7 @@ Endpoints (all JSON unless noted; CORS allowed for SITE_ORIGIN only):
   GET  /api/report?session_id=cs_...   paid report for the website typed at checkout
   GET  /api/report.pdf?session_id=...  the same report as a PDF (application/pdf)
   POST /api/refund  {"session_id": ..} automatic full refund, only when the site could not be reached
+  POST /api/find    {"email", "website"} find a lost report link (paid sessions for that email and site)
 
 Every audit runs in a separate short-lived process (runner.py) with the
 network guard installed and without any secret in its environment.
@@ -14,7 +15,11 @@ network guard installed and without any secret in its environment.
 Environment:
   PORT (default 10000), BIND (default 0.0.0.0)
   SITE_ORIGIN       e.g. https://apex-checkup.onrender.com (the static site); required for CORS
-  TRUST_PROXY=1     take the client address from X-Forwarded-For (Render sets it)
+  TRUST_PROXY=1     take the client address from X-Forwarded-For (Render sets it). The first
+                    entry is used: a client can fake it, which only weakens the per-address
+                    free-check limit; the per-site and overall limits still cap the cost.
+  CLIENT_IP_HEADER  optional: a header the host sets to the real client address (used first)
+  FREE_WORKERS / PAID_WORKERS  concurrent checks of each kind (default 1 each)
   STRIPE_SECRET_KEY, STRIPE_PAYMENT_LINK_ID, STRIPE_WEBSITE_FIELD  see stripe_api.py
 """
 import json
@@ -39,7 +44,8 @@ RENDER_PDF = os.path.join(REPO, "f1-audit-product", "tools", "render_pdf.py")
 PY = sys.executable
 
 MAX_BODY = 4096
-WORKERS = threading.BoundedSemaphore(int(os.environ.get("CHECKUP_WORKERS", "2")))
+POOLS = {"free": threading.BoundedSemaphore(int(os.environ.get("FREE_WORKERS", "1"))),
+         "paid": threading.BoundedSemaphore(int(os.environ.get("PAID_WORKERS", "1")))}
 RUN_TIMEOUT = {"light": 60, "full": 110}
 REPORT_TTL = 30 * 24 * 3600
 
@@ -49,6 +55,7 @@ _reports = OrderedDict()        # session_id -> {"at", "result"}
 _pdfs = OrderedDict()           # session_id -> bytes
 _fatal = {}                     # session_id -> time the paid run could not reach the site
 _hits = defaultdict(deque)      # rate-limit key -> deque of timestamps
+_inflight = {}                  # session_id -> lock, so parallel loads share one run
 MAX_CACHE = 500
 
 def _env_int(name, default):
@@ -65,6 +72,8 @@ LIMITS = {                      # key prefix -> (max events, window seconds)
     "paid-session": (4, 3600),
     "paid-ip": (30, 3600),      # report lookups that miss the cache (each asks Stripe)
     "refund-session": (3, 3600),
+    "find-ip": (10, 3600),
+    "find-email": (5, 3600),
 }
 
 
@@ -98,9 +107,12 @@ def worker_env():
     return env
 
 
-def run_checkup(mode, url):
-    """Returns the runner's JSON, or {"ok": False, "busy": True} when full."""
-    if not WORKERS.acquire(timeout=30):
+def run_checkup(mode, url, pool=None):
+    """Returns the runner's JSON, or {"ok": False, "busy": True} when full.
+    Free checks and paid reports have separate worker pools, so a burst of
+    free checks can never keep a paying buyer waiting."""
+    sem = POOLS[pool or ("free" if mode == "light" else "paid")]
+    if not sem.acquire(timeout=30 if mode == "light" else 90):
         return {"ok": False, "busy": True, "error": "The checker is busy. Try again in a minute."}
     try:
         p = subprocess.run([PY, "-I", RUNNER, mode, url], capture_output=True, text=True,
@@ -112,7 +124,7 @@ def run_checkup(mode, url):
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "The website took too long to answer. Try again in a minute."}
     finally:
-        WORKERS.release()
+        sem.release()
 
 
 def render_pdf(markdown):
@@ -129,18 +141,35 @@ def render_pdf(markdown):
 
 
 def public_report(sid, res):
-    keep = ("site", "url", "score", "grade", "measured_at", "report")
+    keep = ("site", "url", "final_url", "redirects", "requests_made", "score", "grade", "measured_at", "report")
     out = {k: res[k] for k in keep if k in res}
     out.update(ok=True, pdf_url="/api/report.pdf?session_id=" + sid)
     return out
 
 
-def paid_result(sid, ip="-"):
-    """(http status, payload) for a report request. Re-runs if not cached."""
+def _cached(sid):
     with _lock:
         hit = _reports.get(sid)
     if hit and time.time() - hit["at"] < REPORT_TTL:
+        return hit
+    return None
+
+
+def paid_result(sid, ip="-"):
+    """(http status, payload) for a report request. Re-runs if not cached."""
+    hit = _cached(sid)
+    if hit:
         return 200, public_report(sid, hit["result"])
+    with _lock:
+        lk = _inflight.setdefault(sid, threading.Lock())
+    with lk:                     # a second tab waits for the first run instead of starting another
+        hit = _cached(sid)
+        if hit:
+            return 200, public_report(sid, hit["result"])
+        return _paid_run(sid, ip)
+
+
+def _paid_run(sid, ip):
     if not allow("paid-ip", ip):
         return 429, {"ok": False, "error": "Too many report requests. Try again in an hour."}
     try:
@@ -149,6 +178,8 @@ def paid_result(sid, ip="-"):
         return 402, {"ok": False, "error": str(e)}
     except stripe_api.StripeUnavailable:
         return 503, {"ok": False, "error": "We couldn't confirm the payment just now. Try again in a minute."}
+    if sess.get("refunded"):
+        return 402, {"ok": False, "error": "This payment was refunded, so this report link no longer works."}
     if not allow("paid-session", sid):
         return 429, {"ok": False, "error": "This report was just run several times. Try again in an hour."}
     res = run_checkup("full", sess["website"])
@@ -164,6 +195,8 @@ def paid_result(sid, ip="-"):
         return 503, {"ok": False, "error": res.get("error", "The check failed. Try again in a minute.")}
     with _lock:
         _fatal.pop(sid, None)
+    if not sess.get("delivered") and not stripe_api.mark_delivered(sess.get("payment_intent")):
+        sys.stderr.write("warning: could not record report delivery on the payment\n")
     _cache_put(_reports, sid, {"at": time.time(), "result": res})
     return 200, public_report(sid, res)
 
@@ -177,14 +210,17 @@ def do_refund(sid):
         return 402, {"ok": False, "error": str(e)}
     except stripe_api.StripeUnavailable:
         return 503, {"ok": False, "error": "We couldn't reach the payment system. Try again in a minute."}
+    if sess.get("refunded"):
+        _forget(sid)
+        return 200, {"ok": True, "status": "succeeded"}
     with _lock:
         failed_at = _fatal.get(sid)
         have_report = sid in _reports
-    if have_report:
+    if have_report or sess.get("delivered"):
         return 409, {"ok": False, "error": "Your report was delivered, so there is no automatic refund."}
     if not failed_at:
         # e.g. the server restarted: confirm the site is still unreachable first
-        res = run_checkup("light", sess["website"])
+        res = run_checkup("light", sess["website"], pool="paid")
         if res.get("busy"):
             return 503, {"ok": False, "error": res["error"]}
         if res.get("ok"):
@@ -197,10 +233,51 @@ def do_refund(sid):
         return 402, {"ok": False, "error": str(e)}
     except stripe_api.StripeUnavailable:
         return 503, {"ok": False, "error": "The refund didn't go through just now. Try again in a minute."}
+    _forget(sid)
     return 200, {"ok": True, "status": status}
 
 
+def _forget(sid):
+    with _lock:
+        _reports.pop(sid, None)
+        _pdfs.pop(sid, None)
+        _fatal.pop(sid, None)
+
+
+def site_key(raw):
+    """The site a check is for, as the runner will see it (for per-site limits)."""
+    try:
+        return (urlparse(runner_normalize(raw)).hostname or "").removeprefix("www.")
+    except ValueError:
+        return ""
+
+
+def runner_normalize(raw):
+    import runner
+    return runner.normalize_url(raw)
+
+
+def find_reports(email, website):
+    try:
+        found = stripe_api.find_sessions(email)
+    except stripe_api.PaymentError as e:
+        return 400, {"ok": False, "error": str(e)}
+    except stripe_api.StripeUnavailable:
+        return 503, {"ok": False, "error": "We couldn't reach the payment system. Try again in a minute."}
+    want = site_key(website)
+    hits = [f for f in found if want and site_key(f["website"]) == want]
+    if not hits:
+        return 404, {"ok": False, "error": "We couldn't find a report for that email and website in the last 30 days. "
+                                           "Use the email you typed at checkout."}
+    return 200, {"ok": True, "reports": [
+        {"site": want, "created": h["created"], "path": "report.html?session_id=" + h["session_id"]}
+        for h in hits[:5]]}
+
+
 def client_ip(handler):
+    hdr = os.environ.get("CLIENT_IP_HEADER", "")
+    if hdr and handler.headers.get(hdr):
+        return handler.headers.get(hdr).strip()[:64]
     if os.environ.get("TRUST_PROXY") == "1":
         xff = handler.headers.get("X-Forwarded-For", "")
         if xff:
@@ -213,7 +290,12 @@ class Handler(BaseHTTPRequestHandler):
     sys_version = ""
 
     def log_message(self, fmt, *args):  # path only, never the query (session ids)
-        sys.stderr.write("%s %s %s\n" % (self.command, urlparse(self.path).path, args[1] if len(args) > 1 else ""))
+        try:
+            path = urlparse(getattr(self, "path", "") or "").path[:80]
+        except Exception:
+            path = "?"
+        code = args[1] if len(args) > 1 and isinstance(args[1], (str, int)) else ""
+        sys.stderr.write("%s %s %s\n" % (getattr(self, "command", None) or "-", path, code))
 
     def _cors(self):
         origin = os.environ.get("SITE_ORIGIN", "")
@@ -292,7 +374,7 @@ class Handler(BaseHTTPRequestHandler):
         if p.path == "/api/check":
             url = str(body.get("url") or "")[:300]
             ip = client_ip(self)
-            host = re.sub(r"^https?://", "", url.strip().lower()).split("/")[0].split(":")[0]
+            host = site_key(url)
             if not allow("free-ip", ip):
                 return self._send(429, {"ok": False, "error": "You've run several free checks this hour. Try again later."})
             if host and not allow("free-host", host):
@@ -308,6 +390,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(422, {"ok": False, "error": res.get("error", "We couldn't load that website.")})
             keep = ("site", "score", "grade", "top", "failing", "passed", "not_measured", "measured_at")
             return self._send(200, dict({k: res[k] for k in keep if k in res}, ok=True))
+        if p.path == "/api/find":
+            email = str(body.get("email") or "").strip().lower()[:254]
+            website = str(body.get("website") or "")[:300]
+            if not allow("find-ip", client_ip(self)) or not allow("find-email", email):
+                return self._send(429, {"ok": False, "error": "Too many lookups. Try again in an hour."})
+            code, payload = find_reports(email, website)
+            return self._send(code, payload)
         if p.path == "/api/refund":
             sid = str(body.get("session_id") or "")
             if not stripe_api.SESSION_RE.match(sid):
@@ -322,7 +411,7 @@ def check_startup():
     if os.environ.get("SELFSERVE_TEST_ALLOW_LOOPBACK") == "1" and stripe_api.key_mode(key) == "live":
         raise SystemExit("refusing to start: test loopback mode with a live Stripe key")
     if key.startswith(("sk_live_", "sk_test_")):
-        sys.stderr.write("warning: use a restricted key (rk_...) with only Checkout Sessions read and Refunds write\n")
+        sys.stderr.write("warning: use a restricted key (rk_...); see LAUNCH.md for its permissions\n")
 
 
 def main():

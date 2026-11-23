@@ -126,7 +126,7 @@ test("report renders hostile API strings as text", () => {
   assert.ok(html.includes('class="sev sev-low"'), "unknown severity falls back to low class");
   assert.ok(html.includes('class="sev sev-critical"'));
   assert.ok(html.includes('class="grade"') && html.includes(">?</span>"), "bad grade shows ?");
-  assert.ok(html.includes("Score: —/100"), "non-numeric score shows a dash");
+  assert.ok(html.includes("Score: not measured<"), "non-numeric score says not measured");
   assert.ok(html.includes("width:100%"), "category bar is clamped to 100%");
   assert.ok(html.includes('href="https://api.example.test/api/report.pdf?session_id=cs_test_abcdefghijkl"'));
   assert.ok(html.includes("Bookmark this page"));
@@ -150,7 +150,7 @@ test("mini-check renders hostile API strings as text", () => {
   assert.ok(html.includes("&lt;img src=x onerror=alert(1)&gt;"));
   assert.ok(!html.includes("<img"));
   assert.ok(!html.includes("4th is dropped"), "only top 3 shown");
-  assert.ok(html.includes("+ 6 more issues in the full report"));
+  assert.ok(html.includes("+ 6 more issues found so far"));
   assert.ok(html.includes("62/100"));
   assert.ok(html.includes('href="https://buy.stripe.com/test_abc"'));
   assert.ok(html.includes("On the checkout page, type the same website address"));
@@ -224,12 +224,31 @@ test("report page: 200 renders report, print button works", async () => {
   assert.match(d.title, /example\.com/);
 });
 
-test("report page: 402 shows payment message", async () => {
-  mockFetch({ "/api/report?": { status: 402, body: { ok: false, error: "x" } } });
-  const d = page(["report-status", "report-root"]);
+test("report page: 402 shows the server's reason, or a payment message", async () => {
+  mockFetch({ "/api/report?": { status: 402, body: { ok: false, error: "This payment was refunded, so this report link no longer works." } } });
+  let d = page(["report-status", "report-root"]);
+  R.init(d, win("?session_id=" + SID));
+  await tick();
+  assert.equal(d.getElementById("report-status").textContent, "This payment was refunded, so this report link no longer works.");
+  mockFetch({ "/api/report?": { status: 402, body: { ok: false } } });
+  d = page(["report-status", "report-root"]);
   R.init(d, win("?session_id=" + SID));
   await tick();
   assert.equal(d.getElementById("report-status").textContent, "We couldn't find a completed payment for this link.");
+});
+
+test("find page: lists only same-site report links, as text", async () => {
+  const F = require("../find.js");
+  const d = page(["find-result"]);
+  const list = d.getElementById("find-result");
+  const n = F.renderMatches(d, list, { reports: [
+    { site: "<b>roof</b>.com", created: 1700000000, path: "report.html?session_id=" + SID },
+    { site: "evil", created: 1, path: "https://evil.example/report.html?session_id=" + SID },
+    { site: "evil2", created: 1, path: "javascript:alert(1)" }] });
+  assert.equal(n, 1);
+  const html = serialize(list);
+  assert.ok(html.includes('href="report.html?session_id=' + SID + '"'));
+  assert.ok(!html.includes("evil") && !html.includes("javascript:") && !html.includes("<b>"));
 });
 
 test("report page: 422 refundable offers retry and automatic refund", async () => {
@@ -291,7 +310,7 @@ test("index: wakes server, wires Buy buttons, runs the free check", async () => 
   assert.deepEqual(JSON.parse(call.body), { url: "example.com" });
   const res = d.getElementById("check-result");
   assert.equal(res.hidden, false);
-  assert.match(res.textContent, /\+ 8 more issues in the full report/);
+  assert.match(res.textContent, /\+ 8 more issues found so far/);
   assert.equal(d.getElementById("check-btn").disabled, false);
 });
 

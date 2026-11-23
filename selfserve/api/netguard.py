@@ -35,7 +35,7 @@ import requests
 import urllib3.util.connection as u3conn
 
 ALLOWED_PORTS = {80, 443}
-MAX_BODY_BYTES = 5 * 1024 * 1024
+MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_REDIRECTS = 5
 
 

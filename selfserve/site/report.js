@@ -64,11 +64,14 @@
     head.appendChild(el(doc, "div", { className: "report-meta" }, [
       C.gradeBadge(doc, data.grade),
       el(doc, "div", {}, [
-        el(doc, "p", { className: "score", text: "Score: " + C.scoreText(data.score) + "/100" }),
+        el(doc, "p", { className: "score", text: "Score: " + C.scoreText(data.score) + (C.num(data.score) === null ? "" : "/100") }),
+        typeof data.final_url === "string" && data.final_url
+          ? el(doc, "p", { className: "muted small", text: "Your address sent us on to " + C.str(data.final_url, 200) + ", so that is the page we checked." })
+          : null,
         when ? el(doc, "p", { className: "muted small", text: "Measured " + when + " from your live site." }) : null
       ])
     ]));
-    head.appendChild(el(doc, "p", { className: "notice no-print", text: "Bookmark this page — your report link works for 30 days." }));
+    head.appendChild(el(doc, "p", { className: "notice no-print", text: "Bookmark this page — your report link works for 30 days. Lost it? Use Find my report at the bottom of any page." }));
     head.appendChild(el(doc, "div", { className: "btn-row no-print" }, [
       el(doc, "a", { className: "btn", href: pdfHref(cfg, data.pdf_url, sessionId), text: "Download PDF", attrs: { rel: "noopener" } }),
       el(doc, "button", { className: "btn btn-secondary", text: "Print", attrs: { type: "button", "data-action": "print" } })
@@ -96,7 +99,7 @@
         var w = C.num(c.weight);
         tbody.appendChild(el(doc, "tr", {}, [
           el(doc, "th", { text: C.str(c.name, 60), attrs: { scope: "row" } }),
-          el(doc, "td", { className: "num", text: C.scoreText(c.score) + "/100" }),
+          el(doc, "td", { className: "num", text: s === null ? "not measured" : C.scoreText(c.score) + "/100" }),
           el(doc, "td", {}, [bar]),
           el(doc, "td", { className: "num", text: w === null ? "" : Math.round(w) + "%" })
         ]));
@@ -240,7 +243,7 @@
       C.clear(out);
       showStatus("Loading your report… if it's still being built this can take a minute or two.", false, true);
       C.fetchJson(cfg.apiBase + "/api/report?session_id=" + encodeURIComponent(sessionId), { method: "GET" },
-        120000, function () { showStatus(C.WAKE_MESSAGE, false, true); }, 8000)
+        200000, function () { showStatus(C.WAKE_MESSAGE, false, true); }, 8000)
         .then(function (r) {
           var d = r.data || {};
           if (r.status === 200 && d.ok === true) {
@@ -254,7 +257,7 @@
             var h1 = out.querySelector("h1");
             if (h1) { h1.setAttribute("tabindex", "-1"); h1.focus(); }
           } else if (r.status === 402) {
-            showStatus("We couldn't find a completed payment for this link.", true, false);
+            showStatus(C.errorText(d, "We couldn't find a completed payment for this link."), true, false);
             actions([button("Try again", load, true)]);
           } else if (r.status === 422 && d.refundable === true) {
             showStatus(C.errorText(d, "We couldn't check this website."), true, false);

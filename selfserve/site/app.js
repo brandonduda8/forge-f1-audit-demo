@@ -20,7 +20,7 @@
       C.gradeBadge(doc, data.grade),
       el(doc, "div", {}, [
         el(doc, "h3", { text: site }),
-        el(doc, "p", { className: "score", text: C.scoreText(data.score) + "/100" })
+        el(doc, "p", { className: "score", text: C.scoreText(data.score) + (C.num(data.score) === null ? "" : "/100") })
       ])
     ]));
 
@@ -43,7 +43,7 @@
       var more = Math.round(failing - top.length);
       wrap.appendChild(el(doc, "p", {
         className: "more",
-        text: "+ " + more + " more issue" + (more === 1 ? "" : "s") + " in the full report"
+        text: "+ " + more + " more issue" + (more === 1 ? "" : "s") + " found so far. The full report checks more and explains each fix."
       }));
     }
 
@@ -148,7 +148,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: value })
-      }, 90000, function () { showStatus(C.WAKE_MESSAGE, false, true); }, 8000)
+      }, 150000, function () { showStatus(C.WAKE_MESSAGE, false, true); }, 8000)
         .then(function (r) {
           if (r.status === 200 && r.data && r.data.ok === true) {
             status.hidden = true;
