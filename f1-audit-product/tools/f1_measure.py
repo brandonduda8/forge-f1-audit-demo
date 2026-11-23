@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """f1_measure.py — Forge F1 audit measurement harness (v1 pinned methods).
 
-Usage: f1_measure.py <business-name> <url> [outdir]
-Writes <outdir>/<slug>-evidence.json with {claim, method, severity-hint, timestamp}
-records for every checklist row that is honestly measurable without a browser
-render. Rows needing a rendered browser (LCP/CLS/TBT, tap targets, mobile
-menu) are recorded as NOT_MEASURED with the reason.
+Usage: f1_measure.py <business-name> <url> [outdir] [--light]
+Writes <outdir>/<slug>-evidence.json with {value, method, ts, note} records for
+every checklist row that is honestly measurable without a browser render.
+Rows needing a rendered browser (LCP/CLS/TBT, tap targets, mobile menu) are NOT
+written here: audit_pipeline.py lists them from its static NOT_MEASURED table.
+
+--light: a polite prospect check. Only three requests: the homepage, /robots.txt
+and /sitemap.xml. No resource HEADs, no internal-page crawl, no broken-link
+check, no direct TLS socket. Skipped rows are written with
+status "NOT_MEASURED" and a reason, so nothing is estimated.
 
 Never invents: every value traces to a live fetch made by this run.
 """
@@ -58,13 +63,25 @@ def safe_get(url, timeout=15):
     except Exception:
         return None
 
-def measure(name, url, outdir):
-    ev = {"business": name, "url": url, "measured_at": now(), "checks": {}}
+def slugify(name):
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+LIGHT_SKIPPED = {
+    "1.5": "resource HEAD requests skipped (light prospect check)",
+    "1.6": "image HEAD requests skipped (light prospect check)",
+    "4.3": "internal-page crawl skipped (light prospect check)",
+    "4.4": "contact-page fetch skipped (light prospect check)",
+    "6.6": "broken-link HEAD checks skipped (light prospect check)",
+}
+
+def measure(name, url, outdir, light=False):
+    ev = {"business": name, "url": url, "measured_at": now(), "checks": {},
+          "mode": "light" if light else "full"}
     C = ev["checks"]
     r, ttfb_ms, _ = ttfb(url)
     if r is None:
         ev["fatal"] = "homepage unreachable"
-        json.dump(ev, open(os.path.join(outdir, "evidence.json"), "w"), indent=2)
+        json.dump(ev, open(os.path.join(outdir, f"{slugify(name)}-evidence.json"), "w"), indent=2)
         return ev
     html = r.text
     final = r.url
@@ -73,6 +90,10 @@ def measure(name, url, outdir):
     text_l = text.lower()
 
     def put(cid, value, method, note=""):
+        if light and cid in LIGHT_SKIPPED:
+            C[cid] = {"value": None, "status": "NOT_MEASURED", "method": method, "ts": now(),
+                      "note": LIGHT_SKIPPED[cid]}
+            return
         C[cid] = {"value": value, "method": method, "ts": now(), "note": note}
 
     # 1.1 TTFB
@@ -89,7 +110,7 @@ def measure(name, url, outdir):
             if urlparse(full).netloc != urlparse(base).netloc: continue
             res.append((tag, full))
     seen, sizes, imgs = set(), [], []
-    for tag, full in res[:MAX_RESOURCES]:
+    for tag, full in ([] if light else res[:MAX_RESOURCES]):
         if full in seen: continue
         seen.add(full)
         sz, st = head_size(full)
@@ -140,16 +161,24 @@ def measure(name, url, outdir):
                  if re.search(r"(google\.[a-z.]+/maps|g\.page|business\.google\.com|goo\.gl/maps)", a["href"])]
     put("3.5-linked", bool(gbp_links), "outbound links to Google Maps/GBP from homepage")
     host = urlparse(final).hostname
-    put("3.7", {"https": final.startswith("https://"), "cert": cert_info(host) if final.startswith("https://") else None},
+    put("3.7", {"https": final.startswith("https://"), "cert": (None if light else cert_info(host)) if final.startswith("https://") else None},
         "scheme of final URL + TLS cert via ssl socket")
     rob = safe_get(urljoin(final, "/robots.txt"))
     sm = safe_get(urljoin(final, "/sitemap.xml"))
     put("3.8", {"robots": rob, "sitemap_xml": sm,
-                "sitemap_index_guess": safe_get(urljoin(final, "/sitemap_index.xml"))},
+                "sitemap_index_guess": None if light else safe_get(urljoin(final, "/sitemap_index.xml"))},
         "direct fetch of /robots.txt, /sitemap.xml, /sitemap_index.xml (null = fetch failed)")
     # 4.x
     header = soup.find("header") or soup
-    header_text = (soup.find("header").get_text(" ", strip=True) if soup.find("header") else text[:1500])
+    if soup.find("header"):
+        header_text = soup.find("header").get_text(" ", strip=True)
+    else:
+        # No <header>: use the top of the page with <footer> removed, so a number
+        # that only appears in the footer of a short page is not counted (finding 3).
+        top = BeautifulSoup(html, "lxml")
+        for f in top.find_all("footer"):
+            f.decompose()
+        header_text = top.get_text(" ", strip=True)[:1500]
     phones = re.findall(r"\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}", header_text + " " + text[:3000])
     put("4.1", {"phone_in_header_or_hero": bool(re.search(r"\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}", header_text)),
                 "sample": phones[:3]},
@@ -169,7 +198,7 @@ def measure(name, url, outdir):
         if len(internal) >= 8: break
     cta_re = re.compile(r"(get (a )?quote|free estimate|schedule|book now|contact us|call now|request service)", re.I)
     cta_pages = []
-    for u in internal[:5]:
+    for u in ([] if light else internal[:5]):
         try:
             rr = requests.get(u, headers={"User-Agent": UA}, timeout=20)
             if rr.status_code == 200 and cta_re.search(rr.text):
@@ -182,7 +211,7 @@ def measure(name, url, outdir):
                      if re.search(r"(contact|quote|estimate|book|schedule)", a["href"], re.I)][:3]
     steps = 1
     flow_ok, flow_note = False, ""
-    if contact_links:
+    if contact_links and not light:
         steps = 2
         try:
             rr = requests.get(contact_links[0], headers={"User-Agent": UA}, timeout=20)
@@ -220,7 +249,7 @@ def measure(name, url, outdir):
         "copy regex for guarantee/warranty language")
     # 6.6 broken links: HEAD homepage internal links (bounded 25)
     broken = []
-    for u in internal[:25]:
+    for u in ([] if light else internal[:25]):
         try:
             rr = requests.head(u, headers={"User-Agent": UA}, timeout=15, allow_redirects=True)
             if rr.status_code >= 400: broken.append({"url": u, "status": rr.status_code})
@@ -230,14 +259,15 @@ def measure(name, url, outdir):
     # reviews presence 5.2 on-site
     put("5.2", bool(re.search(r"(testimonial|review|what (our )?customers say|hear from our customers|\bstars\b)", text_l)),
         "copy regex for on-site reviews/testimonials section")
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    path = os.path.join(outdir, f"{slug}-evidence.json")
+    path = os.path.join(outdir, f"{slugify(name)}-evidence.json")
     json.dump(ev, open(path, "w"), indent=2)
     print("wrote", path)
     return ev
 
 if __name__ == "__main__":
-    name, url = sys.argv[1], sys.argv[2]
-    outdir = sys.argv[3] if len(sys.argv) > 3 else "."
+    args = [a for a in sys.argv[1:] if a != "--light"]
+    light = "--light" in sys.argv[1:]
+    name, url = args[0], args[1]
+    outdir = args[2] if len(args) > 2 else "."
     os.makedirs(outdir, exist_ok=True)
-    measure(name, url, outdir)
+    measure(name, url, outdir, light=light)

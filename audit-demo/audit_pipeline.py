@@ -102,6 +102,47 @@ NOT_MEASURED = [
     ("5.4", "Owner responds to reviews", "not verifiable from public snippets"),
 ]
 
+# schema.org LocalBusiness and its common subtypes (finding 1: trades, restaurants,
+# salons and dentists use these specific types, and they ARE LocalBusiness).
+LOCAL_BUSINESS_TYPES = {t.lower() for t in """
+LocalBusiness AnimalShelter ArchiveOrganization AutomotiveBusiness AutoBodyShop AutoDealer
+AutoPartsStore AutoRental AutoRepair AutoWash GasStation MotorcycleDealer MotorcycleRepair
+ChildCare Dentist DryCleaningOrLaundry EmergencyService FireStation Hospital PoliceStation
+EmploymentAgency EntertainmentBusiness AmusementPark ArtGallery Casino ComedyClub MovieTheater
+NightClub FinancialService AccountingService AutomatedTeller BankOrCreditUnion InsuranceAgency
+FoodEstablishment Bakery BarOrPub Brewery CafeOrCoffeeShop Distillery FastFoodRestaurant
+IceCreamShop Restaurant Winery GovernmentOffice PostOffice HealthAndBeautyBusiness BeautySalon
+DaySpa HairSalon HealthClub NailSalon TattooParlor HomeAndConstructionBusiness Electrician
+GeneralContractor HVACBusiness HousePainter Locksmith MovingCompany Plumber RoofingContractor
+InternetCafe LegalService Attorney Notary Library LodgingBusiness BedAndBreakfast Campground
+Hostel Hotel Motel Resort MedicalBusiness CommunityHealth Dermatology DietNutrition Gynecologic
+MedicalClinic Optician Optometric Pediatric Physician Physiotherapy PlasticSurgery Podiatric
+PrimaryCare Psychiatric PublicHealth ProfessionalService RadioStation RealEstateAgent
+RecyclingCenter SelfStorage ShoppingCenter SportsActivityLocation BowlingAlley ExerciseGym
+GolfCourse PublicSwimmingPool SkiResort SportsClub StadiumOrArena TennisComplex Store
+BikeStore BookStore ClothingStore ComputerStore ConvenienceStore DepartmentStore
+ElectronicsStore Florist FurnitureStore GardenStore GroceryStore HardwareStore HobbyShop
+HomeGoodsStore JewelryStore LiquorStore MensClothingStore MobilePhoneStore MovieRentalStore
+MusicStore OfficeEquipmentStore OutletStore PawnShop PetStore ShoeStore SportingGoodsStore
+TireShop ToyStore WholesaleStore TelevisionStation TouristInformationCenter TravelAgency
+""".split()}
+
+
+def is_local_business_type(t):
+    """True when a JSON-LD @type (str, or "A/B" joined list) is LocalBusiness or a subtype."""
+    parts = [x.strip().rsplit("/", 1)[-1].rsplit(":", 1)[-1] for x in str(t).split("/")]
+    return any(x.lower() in LOCAL_BUSINESS_TYPES for x in parts if x)
+
+
+def fix_for(cid, sc):
+    """(severity, title, effort, fix) for a failed check. Finding 4: a 3.7 score of 0
+    means no HTTPS at all, which is not the same problem as an inconclusive cert check."""
+    if cid == "3.7" and sc == 0:
+        return ("MAJOR", "Site not served over HTTPS", "Needs a developer or your host, ~1 hour",
+                "Turn on HTTPS (most hosts include a free certificate) and redirect every http:// address to https://.")
+    return FIXES[cid]
+
+
 def score(ev):
     """Apply pinned thresholds to evidence. Returns {cat: {...}, checks: {...}}."""
     C = ev["checks"]
@@ -117,6 +158,9 @@ def score(ev):
             v = c["value"]
         except (KeyError, TypeError):
             res[cid] = {"score": None, "why": "evidence missing for this check (excluded)"}
+            continue
+        if (isinstance(c, dict) and c.get("status") == "NOT_MEASURED") or v is None:
+            res[cid] = {"score": None, "why": "not measured in this run (excluded): " + str(c.get("note", ""))}
             continue
         if cid == "1.1":
             ms = v
@@ -158,7 +202,7 @@ def score(ev):
             put(cid, 1 if n == 1 else 0, f"{n} H1 element(s) (bar: exactly 1)")
         elif cid == "3.4":
             types = v or []
-            lb = [t for t in types if "LocalBusiness" in t or "Local" in str(t)]
+            lb = [t for t in types if is_local_business_type(t)]
             if lb: put(cid, 1, f"JSON-LD @type: {', '.join(types)}")
             elif types: put(cid, 0.5, f"JSON-LD present but no LocalBusiness family: {', '.join(types)}")
             else: put(cid, 0, "no JSON-LD schema found")
@@ -248,19 +292,50 @@ def kb(n):
     return f"{n/1024:.0f}KB" if n < 1024*1024 else f"{n/1024/1024:.2f}MB"
 
 CAT_LINES = {
-    "Speed": "Slow sites bleed mobile callers; every 100ms costs jobs.",
-    "Mobile": "Most home-service customers call from phones.",
+    "Speed": "Slow pages lose impatient visitors, most of all on phones.",
+    "Mobile": "Many customers find and call local businesses from a phone.",
     "SEO basics": "If they can't be found, nothing else matters.",
     "Contact path": "A found, fast site that can't take a call still loses.",
     "Reviews": "Trust at the decision moment.",
     "Trust signals": "Tiebreaker that compounds everything else.",
 }
 
+# Plain-English impact per check (finding 7). Explanatory only: no statistics, no invented numbers.
+IMPACT = {
+    "1.1": "Before anything appears, your server takes this long to answer. On a phone signal, a slow start is when people hit Back and try the next result.",
+    "1.5": "Everything on the page has to download before it is usable. Heavy pages are slow on mobile data.",
+    "1.6": "Oversized photos are often the biggest drag on load time, and among the easiest things to fix.",
+    "1.7": "These files must finish downloading before the page shows anything, so visitors look at a blank screen for longer.",
+    "2.1": "Without this one line of code, phones can show a shrunken desktop page that people have to pinch and zoom to read.",
+    "2.4": "If your number is not a tap-to-call link, a phone visitor has to copy it by hand, and some won't bother.",
+    "3.1": "The title is the headline of your Google listing. A missing or badly sized one makes the listing less likely to get the click.",
+    "3.2": "This is the short blurb under your Google listing. When it is missing or off-length, Google picks text for you.",
+    "3.3": "Google uses the main heading to understand what the page is about. None, or several, muddies that signal.",
+    "3.4": "This hidden code hands Google your business name, phone, address and hours in a format it reads directly for local results.",
+    "3.5-linked": "Linking your Google Business Profile helps visitors find your reviews and directions.",
+    "3.7": "Browsers label sites without HTTPS as \"Not secure\", which puts off people about to type their phone number or address.",
+    "3.8": "These two files help Google find every page. Without them, inner pages can go unnoticed in search.",
+    "4.1": "People decide fast. If the number isn't at the top of the page, some leave before they find it.",
+    "4.2": "Some people would rather send a message than call, especially after hours. Without a form, those leads go elsewhere.",
+    "4.3": "Each main page is a chance to ask for the call or the booking. Pages without a clear next step let visitors drift off.",
+    "4.4": "Every extra step between your homepage and a way to reach you loses some of the people who started.",
+    "4.5": "Saying how fast you reply makes it easier for someone to pick you over a business that doesn't say.",
+    "4.6": "Visitors want to know if you're open and if you serve their area before they reach out.",
+    "5.2": "Reviews on your own site reassure visitors at the moment they are deciding.",
+    "6.1": "A real name and face behind the business builds trust with first-time visitors.",
+    "6.2": "Customers look for license and insurance details before they let someone into their home.",
+    "6.3": "Stock photos make a business look like every other one; real photos show the actual work.",
+    "6.4": "Social links let visitors see recent work and that the business is active.",
+    "6.5": "A stated guarantee lowers the risk of trying you for the first time.",
+    "6.6": "Broken links make a site look abandoned and stop visitors who click them.",
+}
+
+
 def build_report(name, url, ev, sc, date_str, domain):
     checks = sc["check_scores"]
     fails = [(cid, d) for cid, d in checks.items() if d["score"] is not None and d["score"] < 1]
     sev_rank = {"CRITICAL": 0, "MAJOR": 1, "MINOR": 2}
-    fails_sorted = sorted(fails, key=lambda x: (sev_rank[FIXES[x[0]][0]], x[1]["score"]))
+    fails_sorted = sorted(fails, key=lambda x: (sev_rank[fix_for(x[0], x[1]["score"])[0]], x[1]["score"]))
     passes = [cid for cid, d in checks.items() if d["score"] == 1]
 
     L = []
@@ -268,8 +343,6 @@ def build_report(name, url, ev, sc, date_str, domain):
     A(f"# WEBSITE AUDIT -- Apex Forge")
     A(f"**Prepared for: {name} | {domain} | Audited {date_str}**")
     A(f"*Measured, not asserted. Every number below traces to a live measurement taken on the audit date.*")
-    A("")
-    A("> If this audit doesn't deliver, you get a full refund -- no questions, no forms.")
     A("")
     A("---")
     A("")
@@ -294,7 +367,7 @@ def build_report(name, url, ev, sc, date_str, domain):
     if fails:
         A("## THE 3 THINGS COSTING YOU THE MOST")
         for i, (cid, d) in enumerate(fails_sorted[:3], 1):
-            sev, title, effort, _fix = FIXES[cid]
+            sev, title, effort, _fix = fix_for(cid, d["score"])
             A(f"{i}. **[{sev}] {title}** -- {d['why']} on {date_str}.")
         A("")
         A("---")
@@ -302,16 +375,16 @@ def build_report(name, url, ev, sc, date_str, domain):
         A("## FULL FINDINGS (ranked by severity -- biggest leaks first)")
         A("")
         for i, (cid, d) in enumerate(fails_sorted, 1):
-            sev, title, effort, fix = FIXES[cid]
+            sev, title, effort, fix = fix_for(cid, d["score"])
             A(f"### {i}. {title} -- {sev}")
             A(f"- **Measured:** {d['why']} (method: {ev['checks'][cid]['method']}; {date_str})")
-            A(f"- **Why it costs you:** This check scores {d['score']}/1 against the audit bar -- it is a specific, measured leak in how the site turns visitors into calls.")
+            A(f"- **Why it costs you:** {IMPACT.get(cid, 'This check is below the audit bar.')}")
             A(f"- **Fix:** {fix}")
             A(f"- **Effort:** {effort}")
             A("")
     else:
         A("## NO FINDINGS BELOW THE BAR")
-        A("Every measured check passed. Keep the fundamentals maintained and consider the Deep Audit for competitor head-to-head.")
+        A("Every measured check passed. Keep the fundamentals maintained; the Audit + Fix Plan adds a side-by-side with two local competitors.")
         A("")
     if passes:
         A("**What passed:**")
@@ -326,18 +399,17 @@ def build_report(name, url, ev, sc, date_str, domain):
     A("")
     A("## WHAT HAPPENS NEXT")
     A("")
-    A("**Option 1 -- Fix it yourself.** Everything above is yours to keep, with or without us. The ranked list is the roadmap.")
+    A("**Fix it yourself.** Everything above is yours to keep. The ranked list is the roadmap.")
     A("")
-    A("**Option 2 -- We fix the top 5 for you.** Quoted per project in the $500-$1,500 range, agreed in writing before any work starts. Covers fixes 1-5 above, done-for-you.")
+    A("**Audit + Walkthrough ($150).** This audit plus a check of your Google Business Profile and reviews, and a 30-minute recorded video walking through your fixes in order.")
     A("")
-    A("**Option 3 -- The Deep Audit ($297, your $75 credited).** Competitor head-to-head, full conversion teardown, and a 30-minute recorded walkthrough of these findings.")
+    A("**Audit + Fix Plan ($300).** Everything in the Walkthrough, plus a side-by-side with two local competitors measured the same way, a step-by-step fix plan, and a re-check 30 days later.")
     A("")
-    A("**Site Care ($97/mo, cancel anytime):** we watch your site 24/7 -- uptime, speed, broken links, certificate expiry -- and send you one plain-English health report a month.")
+    A("If you already bought this $75 Snapshot Audit, it counts toward either upgrade.")
     A("")
     A("---")
     A("")
     A("*Questions? Reply to this email -- it reaches Brandon directly.*")
-    A("*Apex Forge -- Refund guarantee: full refund if this audit doesn't deliver. Just say the word.*")
     A(f"*Evidence pack: `{ev.get('evidence_file','')}` (all measurements, methods, timestamps).*")
     return "\n".join(L)
 
@@ -353,7 +425,11 @@ def run_pipeline(name, url, jobdir):
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     evpath = os.path.join(jobdir, f"{slug}-evidence.json")
     if not os.path.exists(evpath):
-        return {"ok": False, "error": "evidence.json missing after measurement"}
+        legacy = os.path.join(jobdir, "evidence.json")  # older f1_measure wrote fatal runs here
+        if os.path.exists(legacy):
+            evpath = legacy
+        else:
+            return {"ok": False, "error": "evidence.json missing after measurement"}
     ev = json.load(open(evpath))
     ev["evidence_file"] = os.path.basename(evpath)
     if ev.get("fatal"):
