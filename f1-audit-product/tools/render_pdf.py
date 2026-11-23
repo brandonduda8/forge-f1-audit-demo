@@ -126,6 +126,10 @@ def main():
     pdf.add_page()
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(30, 41, 59)
+    # The cover leaves the fill colour on dark slate; tables in write_html fill
+    # their cells with the current fill colour, which made the score table
+    # dark text on dark (fpdf2 2.8+). Reset it to the light background.
+    pdf.set_fill_color(*LIGHT_BG)
     pdf.write_html(md_to_html(md))
     pdf.output(dst)
     print("wrote", dst)

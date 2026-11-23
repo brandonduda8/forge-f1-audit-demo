@@ -37,6 +37,8 @@ Copy the `rk_test_...` key. Paste it only into Render (step 4). Never into a fil
    - `SITE_ORIGIN` = the static site address, e.g. `https://apex-checkup.onrender.com` (no trailing slash)
    - `APEX_API_BASE` = the API address, e.g. `https://apex-checkup-api.onrender.com`
    - `APEX_PAYMENT_LINK` = the `https://buy.stripe.com/test_...` link
+   - `APEX_SUPPORT_EMAIL` = an address for refund requests (a separate free inbox keeps your personal one private).
+     Leave it blank and the site only offers the automatic refund for unreachable sites.
    If you don't know the addresses yet, apply first, copy them from each service's page, then set the values and
    press **Manual Deploy** on both services.
 4. Back in Stripe, put the static site address into the payment link's redirect (step 2.3).

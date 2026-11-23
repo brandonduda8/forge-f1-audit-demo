@@ -132,7 +132,7 @@ def measure(name, url, outdir, light=False):
     blocking_css = [l.get("href") for l in soup.find_all("link", rel=lambda v: v and "stylesheet" in v)
                     if l.get("media", "all") == "all"]
     put("1.7", {"sync_scripts": len(blocking_js), "blocking_stylesheets": len(blocking_css)},
-        "HTML parse: script[src] without async/defer + blocking stylesheets (heuristic; Lighthouse in production)",
+        "HTML parse: script[src] without async/defer + blocking stylesheets (heuristic; a full browser test can confirm)",
         "pass if 0 critical chains (heuristic)")
     # 2.x
     vp = soup.find("meta", attrs={"name": "viewport"})
@@ -187,7 +187,7 @@ def measure(name, url, outdir, light=False):
     for f in soup.find_all("form"):
         fields = [i.get("name") or i.get("type") for i in f.find_all(["input", "textarea", "select"])]
         forms.append({"action": f.get("action"), "fields": fields[:12], "n_fields": len(fields)})
-    put("4.2", {"n_forms": len(forms), "forms": forms[:3]}, "form tags in HTML (submit NOT tested: prospect dry-run rule)")
+    put("4.2", {"n_forms": len(forms), "forms": forms[:3]}, "form tags in HTML (forms are never submitted)")
     # 4.3 CTA crawl top 5 internal pages
     internal = []
     for a in soup.find_all("a", href=True):

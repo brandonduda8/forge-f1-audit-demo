@@ -95,9 +95,9 @@ NOT_MEASURED = [
     ("2.3", "Text readable without zoom", "needs Playwright mobile emulation (pinned)"),
     ("2.5", "Mobile menu usability", "needs Playwright mobile emulation (pinned)"),
     ("2.6", "Form usability on mobile render", "needs Playwright mobile emulation (pinned)"),
-    ("3.5b", "Google Business Profile listing exists (rating/count)", "needs web-search snippet review (production: GBP API); only the link half is measured here"),
+    ("3.5b", "Google Business Profile listing exists (rating/count)", "needs Google Business Profile data; only the link to it is checked here"),
     ("3.6", "NAP consistency across directories", "needs pairwise source comparison (BBB/Yelp/site); not automated in demo mode"),
-    ("5.1", "Google review count and rating", "needs GBP data via public snippets; named in production reports"),
+    ("5.1", "Google review count and rating", "needs Google Business Profile data, which this check does not read"),
     ("5.3", "Review recency (90 days)", "not verifiable from public snippets"),
     ("5.4", "Owner responds to reviews", "not verifiable from public snippets"),
 ]
@@ -181,7 +181,7 @@ def score(ev):
                 if big: notes.append(f"1.6 oversized: {[i['url'][:80] for i in big][:3]}")
         elif cid == "1.7":
             n = v["sync_scripts"] + v["blocking_stylesheets"]
-            put(cid, 1 if n == 0 else 0, f"{v['sync_scripts']} sync scripts + {v['blocking_stylesheets']} blocking stylesheets (heuristic; Lighthouse in production)")
+            put(cid, 1 if n == 0 else 0, f"{v['sync_scripts']} sync scripts + {v['blocking_stylesheets']} blocking stylesheets (heuristic; a full browser test can confirm)")
         elif cid == "2.1":
             put(cid, 1 if v else 0, "viewport meta tag " + ("present" if v else "missing"))
         elif cid == "2.4":
@@ -212,7 +212,7 @@ def score(ev):
             if v.get("https") and v.get("cert") and v["cert"].get("valid"):
                 put(cid, 1, "HTTPS + valid cert")
             elif v.get("https"):
-                put(cid, 0.5, "HTTPS served; origin cert details unverifiable from this environment (direct TLS is proxied) — production verifies directly")
+                put(cid, 0.5, "HTTPS served, but the certificate could not be inspected directly in this run")
             else:
                 put(cid, 0, "site not served over HTTPS")
         elif cid == "3.8":
@@ -225,7 +225,7 @@ def score(ev):
                 "phone number " + ("visible in header/hero" if v["phone_in_header_or_hero"] else "not found in header/hero"))
         elif cid == "4.2":
             n = v["n_forms"]
-            if n == 0: put(cid, 0, "no <form> elements on homepage (submits never tested — prospect dry-run rule)")
+            if n == 0: put(cid, 0, "no <form> elements on homepage (forms are never submitted)")
             else:
                 best = 0
                 for fm in v["forms"]:
@@ -391,7 +391,8 @@ def build_report(name, url, ev, sc, date_str, domain, variant="snapshot"):
     L = []
     A = L.append
     A(f"# WEBSITE AUDIT -- Apex Forge")
-    A(f"**Prepared for: {name} | {domain} | Audited {date_str}**")
+    who = domain if name == domain else f"{name} | {domain}"
+    A(f"**Prepared for: {who} | Audited {date_str}**")
     A(f"*Measured, not asserted. Every number below traces to a live measurement taken on the audit date.*")
     A("")
     A("---")
