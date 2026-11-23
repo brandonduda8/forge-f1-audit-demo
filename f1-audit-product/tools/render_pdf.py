@@ -18,7 +18,10 @@ def sanitize(s):
     return (s.replace("—", "--").replace("–", "-").replace("★", "*")
              .replace("©", "(c)").replace("→", "->").replace("≤", "<=")
              .replace("≥", ">=").replace("\u2019", "'").replace("\u201c", '"')
-             .replace("\u201d", '"').replace("\u2026", "..."))
+             .replace("\u201d", '"').replace("\u2026", "...").replace("\u2018", "'")
+             # the core PDF font is Latin-1 only: anything else (emoji, CJK) becomes "?"
+             # instead of crashing the render on a site with an unusual title
+             .encode("latin-1", "replace").decode("latin-1"))
 
 def md_inline(s):
     s = sanitize(s)
@@ -126,6 +129,10 @@ def main():
     pdf.add_page()
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(30, 41, 59)
+    # The cover leaves the fill colour on dark slate; tables in write_html fill
+    # their cells with the current fill colour, which made the score table
+    # dark text on dark (fpdf2 2.8+). Reset it to the light background.
+    pdf.set_fill_color(*LIGHT_BG)
     pdf.write_html(md_to_html(md))
     pdf.output(dst)
     print("wrote", dst)

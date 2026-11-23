@@ -1,27 +1,58 @@
-# Render Blueprint — Forge F1 Audit Demo (Apex Forge)
-# Apply via: Render Dashboard > New > Blueprint > connect repo containing this file.
-# Docs: https://render.com/docs/blueprint-spec
+# Render Blueprint: Apex Forge Website Checkup ($29 self-serve audit)
+# NOT DEPLOYED. Applying this blueprint is Brandon's tap (see selfserve/LAUNCH.md).
 #
-# COST: $0/mo on the free tier (512MB RAM / 0.1 CPU, sleeps after 15 min idle).
-# No secrets required. No persistent disk (audit jobs are ephemeral).
+# Two free services:
+#   apex-checkup       static site (the landing page, free check, report page). Free static sites do not sleep.
+#   apex-checkup-api   Python web service (runs the checks, verifies Stripe payments). Free plan:
+#                      512 MB, sleeps after 15 min idle, ~1 min to wake. The page wakes it on load.
+# Secrets are never in this file: every value marked sync: false is typed into the Render dashboard.
+#
+# The old one-click demo service (forge-audit-demo) was removed from this blueprint on purpose:
+# it handed out the full PDF report free, which would undercut the $29 checkup. Its code is unchanged.
 
 services:
   - type: web
-    name: forge-audit-demo
-    runtime: docker
+    name: apex-checkup-api
+    runtime: python
     plan: free
-    dockerfilePath: ./Dockerfile
-    # Repo/bundle root must contain audit-demo/ and f1-audit-product/
-    # (see render/package.sh). If the repo nests them, set rootDir below.
-    # rootDir: .
+    buildCommand: pip install -r requirements.txt
+    startCommand: python selfserve/api/server.py
     healthCheckPath: /health
     envVars:
-      - key: BIND
-        value: 0.0.0.0
-      - key: F1_DIR
-        value: /app/f1-audit-product
-      - key: F1_SAMPLES
-        value: /app/f1-audit-product/samples
-      - key: AUDIT_PYBIN
-        value: /usr/local/bin/python
-      # PORT is injected by Render automatically — do not set it here.
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: TRUST_PROXY
+        value: "1"
+      - key: SITE_ORIGIN            # https address of the static site, e.g. https://apex-checkup.onrender.com
+        sync: false
+      - key: STRIPE_SECRET_KEY      # restricted key rk_live_... (Checkout Sessions: Read, Refunds: Write)
+        sync: false
+      - key: STRIPE_PAYMENT_LINK_ID # plink_... of the $29 payment link
+        sync: false
+
+  - type: web
+    name: apex-checkup
+    runtime: static
+    rootDir: selfserve/site
+    # publish only the pages, never tests or notes
+    buildCommand: python3 build_config.py && mkdir -p public && cp *.html *.css *.js robots.txt public/ && rm -f public/config.example.js
+    staticPublishPath: public
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+    envVars:
+      - key: APEX_API_BASE          # https address of apex-checkup-api, e.g. https://apex-checkup-api.onrender.com
+        sync: false
+      - key: APEX_PAYMENT_LINK      # https://buy.stripe.com/... from the Stripe dashboard
+        sync: false
+      - key: APEX_PRICE
+        value: $29
+      - key: APEX_SUPPORT_EMAIL     # required: where refund and privacy requests go (shown on privacy and terms pages)
+        sync: false

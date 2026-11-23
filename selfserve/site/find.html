@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; form-action 'self' https://buy.stripe.com; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Find your report — Apex Forge Website Checkup</title>
+<meta name="description" content="Lost your report link? Get it back with the email you paid with and your website.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the form</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Apex <span>Forge</span> Website Checkup</a>
+  </div>
+</header>
+
+<main id="main">
+  <div class="wrap">
+    <h1>Find your report</h1>
+    <p>Closed the page after paying? Enter the email you typed at checkout and your website. Report links work for 30 days.</p>
+    <noscript>
+      <p class="status error">This page needs JavaScript. Please turn it on and reload.</p>
+    </noscript>
+    <form id="find-form" novalidate>
+      <label for="find-email">Email you paid with</label>
+      <input id="find-email" name="email" type="email" autocomplete="email" required maxlength="254">
+      <label for="find-site">Your website</label>
+      <input id="find-site" name="website" type="text" inputmode="url" autocomplete="url" placeholder="yourbusiness.com" required maxlength="300">
+      <button id="find-btn" class="btn" type="submit">Find my report</button>
+    </form>
+    <div id="find-status" class="status" role="status" aria-live="polite" hidden></div>
+    <ul id="find-result" class="find-result" hidden></ul>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <nav aria-label="Legal">
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+    </nav>
+    <p>Apex Forge · Villa Park, Illinois</p>
+  </div>
+</footer>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="find.js"></script>
+</body>
+</html>

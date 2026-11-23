@@ -1,0 +1,60 @@
+name: selfserve-checkup
+# Tests the $29 checkup. Runs on pull requests that touch it, or by hand.
+# The "public smoke" step runs the FREE (light) check against three large public
+# sites: exactly three polite GET requests per site (homepage, robots.txt, sitemap.xml),
+# then one paid-mode report on example.com (a one-page site, so only a handful of requests).
+on:
+  pull_request:
+    paths: ["selfserve/**", "audit-demo/**", "f1-audit-product/**", "requirements.txt", ".github/workflows/selfserve-checkup.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pytest
+      - name: Unit and end-to-end tests (local fixtures, fake Stripe)
+        run: python -m pytest -q -p no:cacheprovider selfserve/api/tests
+      - name: Site tests
+        run: |
+          if [ -d selfserve/site/tests ]; then python -m pytest -q -p no:cacheprovider selfserve/site/tests; fi
+          if [ -f selfserve/site/tests/test_render.mjs ]; then node selfserve/site/tests/test_render.mjs; fi
+      - name: Public smoke (free check, 3 requests per site)
+        run: |
+          mkdir -p smoke
+          for u in https://www.python.org/ https://www.wikipedia.org/ https://example.com/; do
+            n=$(echo "$u" | sed 's#https://##; s#/##g')
+            python -I selfserve/api/runner.py light "$u" > "smoke/$n.json"
+            echo "== $u"; cat "smoke/$n.json"; echo
+          done
+          python - <<'PY'
+          import json, glob
+          for f in sorted(glob.glob("smoke/*.json")):
+              d = json.load(open(f))
+              assert d.get("requests_made", 0) <= 3, (f, d.get("requests_made"))
+              assert d.get("ok") or d.get("fatal"), (f, d)
+              print(f, "ok" if d.get("ok") else "fatal", d.get("grade"), d.get("score"), d.get("requests_made"))
+          PY
+      - name: Public smoke (paid report on example.com, capped at 90 requests)
+        run: |
+          python -I selfserve/api/runner.py full https://example.com/ > smoke/full-example.com.json
+          python - <<'PY'
+          import json
+          d = json.load(open("smoke/full-example.com.json"))
+          assert d["ok"] and d["requests_made"] <= 90, d
+          rep = d["report"]
+          assert rep["categories"] and "markdown" in d
+          print("full example.com", d["grade"], d["score"], d["requests_made"], "requests,",
+                len(rep["findings"]), "findings,", len(rep["passed"]), "passed,", len(rep["not_measured"]), "not measured")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-smoke
+          path: smoke/
