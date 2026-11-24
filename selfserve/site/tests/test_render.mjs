@@ -122,6 +122,11 @@ test("report renders hostile API strings as text", () => {
         { id: EVIL, severity: EVIL, title: EVIL, measured: EVIL, why: EVIL, fix: EVIL, effort: EVIL },
         { id: "1.1", severity: "CRITICAL", title: "Slow server", measured: "1900 ms", why: "w", fix: "f", effort: "1 hour" },
       ],
+      sections: [
+        { name: EVIL, score: 40, findings: [{ id: "7.1", severity: "MAJOR", title: EVIL, measured: EVIL, why: EVIL, fix: EVIL, effort: EVIL }] },
+        { name: "Security and email trust", score: null, findings: [] },
+        "junk", null,
+      ],
       passed: [{ id: "2.1", title: EVIL, measured: EVIL }],
       not_measured: [{ id: "1.2", label: EVIL, reason: EVIL }],
     },
@@ -139,6 +144,9 @@ test("report renders hostile API strings as text", () => {
   assert.ok(html.includes('href="https://api.example.test/api/report.pdf?order_id=ORDabcdefghijkl"'));
   assert.ok(html.includes("Bookmark this page"));
   assert.ok(html.includes("Top 3 fixes") && html.includes("Not measured (1)") && html.includes("What passed (1)"));
+  assert.ok(html.includes("not in grade"), "section rows in the score table say they are not in the grade");
+  assert.ok(html.includes("Security and email trust<") && html.includes("Nothing in this section could be measured"));
+  assert.ok(html.includes("(40/100)"));
 });
 
 test("report handles a missing report body", () => {
@@ -151,7 +159,9 @@ test("report handles a missing report body", () => {
 test("mini-check renders hostile API strings as text", () => {
   const data = { ok: true, site: EVIL, score: 62, grade: "C", failing: 9, passed: 12, not_measured: 17,
     measured_at: "2026-11-23T10:00:00Z",
-    top: [{ severity: EVIL, title: EVIL }, { severity: "HIGH", title: "No tap-to-call link" }, { severity: "MEDIUM", title: "t" }, { severity: "LOW", title: "4th is dropped" }] };
+    top: [{ severity: EVIL, title: EVIL }, { severity: "HIGH", title: "No tap-to-call link" }, { severity: "MEDIUM", title: "t" }, { severity: "LOW", title: "4th is dropped" }],
+    sections: [{ name: EVIL, score: 20, failing: 5, top: { severity: "MAJOR", title: EVIL } },
+      { name: "Security and email trust", score: 100, failing: 0, top: null }, null, 7] };
   const node = A.renderMiniResult(doc, data, cfg);
   const html = serialize(node);
   assertNoInjectedMarkup(node);
@@ -160,6 +170,8 @@ test("mini-check renders hostile API strings as text", () => {
   assert.ok(!html.includes("4th is dropped"), "only top 3 shown");
   assert.ok(html.includes("+ 6 more issues found so far"));
   assert.ok(html.includes("62/100"));
+  assert.ok(html.includes("(+4 more in the full report)"));
+  assert.ok(html.includes("Security and email trust: <") && html.includes("nothing below the bar in the free check"));
   assert.ok(html.includes("data-buy-checked"));
   assert.ok(html.includes("We never see your card details"));
 });

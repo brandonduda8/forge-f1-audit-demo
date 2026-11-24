@@ -442,7 +442,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"ok": False, "error": res["error"]})
             if not res.get("ok"):
                 return self._send(422, {"ok": False, "error": res.get("error", "We couldn't load that website.")})
-            keep = ("site", "score", "grade", "top", "failing", "passed", "not_measured", "measured_at")
+            keep = ("site", "score", "grade", "top", "failing", "passed", "not_measured", "sections", "measured_at")
             return self._send(200, dict({k: res[k] for k in keep if k in res}, ok=True))
         if p.path == "/api/find":
             email = str(body.get("email") or "").strip().lower()[:254]

@@ -13,7 +13,17 @@ class _Quiet(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def _seen(self):
+        seen = getattr(self.server, "seen", None)
+        if seen is not None:
+            seen.append((self.command, self.path))
+
+    def do_HEAD(self):
+        self._seen()
+        return super().do_HEAD()
+
     def do_GET(self):
+        self._seen()
         if self.path.startswith("/redirect-private"):
             self.send_response(302)
             self.send_header("Location", "http://169.254.169.254/latest/meta-data/")
@@ -60,13 +70,14 @@ class _Quiet(http.server.SimpleHTTPRequestHandler):
 def serve(handler):
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     srv.daemon_threads = True
+    srv.seen = []              # (method, path) of every request, for tests
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, f"http://127.0.0.1:{srv.server_address[1]}"
 
 
 def serve_site(name):
     """Serve one fixture site at its own root, like a real domain."""
-    return serve(partial(_Quiet, directory=os.path.join(FIX, name)))
+    return serve(partial(_Quiet, directory=os.path.join(FIX, name)))   # name may also be an absolute path
 
 
 LOC = "LTESTLOCATION01"

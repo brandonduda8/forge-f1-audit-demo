@@ -104,6 +104,11 @@ These can only be confirmed against a real Square account; each has a fallback i
   email-sending account; Square's own receipt goes to the buyer, and **Find my report** recovers a lost link.
 - The checker makes at most 3 page requests for a free check and at most 90 for a paid report (plus any
   redirects the site itself sends, at most 5 each), only to the website entered, never to private network addresses.
+  The paid report's 90 include one HEAD each to `/.env` and `/.git/HEAD`; nothing is downloaded from them.
+- The email checks (SPF, DMARC, DKIM) are DNS lookups through Render's own resolver. If Render's network ever
+  blocks them, those rows say "not measured" and nothing else changes.
+- The accessibility and security sections are a basic automated scan, not a full accessibility audit or a
+  security test, and the page says so.
 - The free check is limited per visitor address, per website and in total (60 an hour). On Render the visitor
   address comes from a header a visitor could fake; that only weakens the per-visitor limit, the other two still cap it.
 - One free check and one paid report run at a time; others wait their turn (up to 30 and 90 seconds).

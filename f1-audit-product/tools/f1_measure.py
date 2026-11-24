@@ -4,6 +4,9 @@
 Usage: f1_measure.py <business-name> <url> [outdir] [--light]
 Writes <outdir>/<slug>-evidence.json with {value, method, ts, note} records for
 every checklist row that is honestly measurable without a browser render.
+Rows 7.x (accessibility) and 8.x (security and email trust) come from
+f1_trust.py, using the same homepage response plus, on a full run, one HEAD each
+to /.env and /.git/HEAD and DNS TXT lookups (dnstxt.py).
 Rows needing a rendered browser (LCP/CLS/TBT, tap targets, mobile menu) are NOT
 written here: audit_pipeline.py lists them from its static NOT_MEASURED table.
 
@@ -75,6 +78,9 @@ LIGHT_SKIPPED = {
     "4.3": "internal-page crawl skipped (light prospect check)",
     "4.4": "contact-page fetch skipped (light prospect check)",
     "6.6": "broken-link HEAD checks skipped (light prospect check)",
+    "8.3": "certificate inspection skipped (light prospect check)",
+    "8.4": "exposed-file checks skipped (light prospect check)",
+    "8.7": "DKIM lookups skipped (light prospect check)",
 }
 
 def measure(name, url, outdir, light=False):
@@ -275,6 +281,9 @@ def measure(name, url, outdir, light=False):
     # reviews presence 5.2 on-site
     put("5.2", bool(re.search(r"(testimonial|review|what (our )?customers say|hear from our customers|\bstars\b)", text_l)),
         "copy regex for on-site reviews/testimonials section")
+    # 7.x accessibility and 8.x security / email trust (f1_trust.py)
+    import f1_trust
+    f1_trust.add_checks(put, C, r, soup, url, final, light, requests)
     path = os.path.join(outdir, f"{slugify(name)}-evidence.json")
     json.dump(ev, open(path, "w"), indent=2)
     print("wrote", path)

@@ -5,11 +5,15 @@ Usage: python3 -I runner.py <light|full> <url>
 Prints one JSON object on stdout and exits 0, or exits 2 on bad usage.
 
 * light: the free mini-check. f1_measure --light: exactly three requests
-  (homepage, /robots.txt, /sitemap.xml). Returns only the grade, the score and
-  the titles of the top 3 problems.
+  (homepage, /robots.txt, /sitemap.xml), plus two DNS TXT lookups (SPF, DMARC)
+  that never touch the site. Returns only the grade, the score, the titles of
+  the top 3 problems, and the top problem in each separate section
+  (accessibility; security and email trust).
 * full: the paid report. Homepage, robots, sitemap, up to 40 same-site
   resources (HEAD), up to 5 internal pages, the first contact page, and up to
-  25 internal links (HEAD), with a hard cap of 90 requests and 75 seconds.
+  25 internal links (HEAD), one HEAD each to /.env and /.git/HEAD (never
+  downloaded), with a hard cap of 90 requests and 75 seconds; plus DNS TXT
+  lookups for SPF, DMARC and common DKIM names.
   Returns the structured report and the Markdown used for the PDF.
 
 Measurement is f1_measure.py and scoring is audit_pipeline.score(), imported
@@ -135,12 +139,17 @@ def structured(ev, sc, pipe):
     checks = sc["check_scores"]
     fails = [(cid, d) for cid, d in checks.items() if d["score"] is not None and d["score"] < 1]
     fails.sort(key=lambda x: (SEV_RANK[pipe.fix_for(x[0], x[1]["score"])[0]], x[1]["score"], x[0]))
-    findings = []
-    for cid, d in fails:
+
+    def finding(cid, d):
         sev, title, effort, fix = pipe.fix_for(cid, d["score"])
-        findings.append({"id": cid, "severity": sev, "title": title, "measured": d["why"],
-                         "method": ev["checks"].get(cid, {}).get("method", ""),
-                         "why": pipe.IMPACT.get(cid, ""), "fix": fix, "effort": effort})
+        return {"id": cid, "severity": sev, "title": title, "measured": d["why"],
+                "method": ev["checks"].get(cid, {}).get("method", ""),
+                "why": pipe.IMPACT.get(cid, ""), "fix": fix, "effort": effort}
+    # the graded checks; accessibility and security have their own sections
+    findings = [finding(cid, d) for cid, d in fails if cid not in pipe.SECTION_IDS]
+    sections = [{"name": name, "score": (sc.get("sections") or {}).get(name, {}).get("score"),
+                 "findings": [finding(cid, d) for cid, d in fails if cid in ids]}
+                for name, ids in pipe.SECTIONS]
     passed = [{"id": cid, "title": pipe.LABELS.get(cid, cid), "measured": d["why"]}
               for cid, d in sorted(checks.items()) if d["score"] == 1]
     not_measured = [{"id": cid, "label": pipe.LABELS.get(cid, cid), "reason": d["why"]}
@@ -148,7 +157,8 @@ def structured(ev, sc, pipe):
     not_measured += [{"id": cid, "label": label, "reason": why} for cid, label, why in pipe.NOT_MEASURED]
     cats = [{"name": n, "score": sc["categories"][n]["score"], "weight": w}
             for n, w, _ids in pipe.CATEGORIES]
-    return {"categories": cats, "findings": findings, "passed": passed, "not_measured": not_measured}
+    return {"categories": cats, "findings": findings, "sections": sections, "passed": passed,
+            "not_measured": not_measured}
 
 
 def run(mode, raw_url):
@@ -211,6 +221,10 @@ def run(mode, raw_url):
         out["failing"] = len(rep["findings"])
         out["passed"] = len(rep["passed"])
         out["not_measured"] = len(rep["not_measured"])
+        # the top finding from each separate section (accessibility, security and email trust)
+        out["sections"] = [{"name": s["name"], "score": s["score"], "failing": len(s["findings"]),
+                            "top": ({"severity": s["findings"][0]["severity"], "title": s["findings"][0]["title"]}
+                                    if s["findings"] else None)} for s in rep["sections"]]
         return out
     from zoneinfo import ZoneInfo
     date_str = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
