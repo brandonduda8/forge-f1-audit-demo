@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; form-action 'self'; base-uri 'none'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Apex Forge Website Checkup — free website check for local businesses</title>
+<meta name="description" content="Free 60-second check of your small business website: see your grade and top 3 issues. Get the full $29 automated report with ranked fixes and a PDF.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip" href="#free-check">Skip to the free check</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Apex <span>Forge</span> Website Checkup</a>
+    <nav aria-label="Main">
+      <a href="#free-check">Free check</a>
+      <a href="#price">Price</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" aria-labelledby="h-hero">
+    <div class="wrap">
+      <h1 id="h-hero">Find what's costing your website calls — in 60 seconds</h1>
+      <p class="lede">Type your website below. A free automated check looks at your live site and shows your grade and the top 3 issues. No account, no sign-up, nobody will call you.</p>
+
+      <form id="check-form" class="check-form" novalidate>
+        <div id="free-check">
+          <label for="site-url">Your website address</label>
+          <div class="field-row">
+            <input id="site-url" name="url" type="text" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" maxlength="300" placeholder="yourbusiness.com" required>
+            <button id="check-btn" class="btn" type="submit">Run free check</button>
+          </div>
+          <p class="muted small">Only check websites you own or are allowed to check. The checker makes a few polite, read-only requests to the site.</p>
+        </div>
+      </form>
+
+      <div id="check-status" class="status" role="status" aria-live="polite" hidden></div>
+      <div id="check-result" class="result" tabindex="-1" aria-live="polite" hidden></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-includes">
+    <div class="wrap">
+      <h2 id="h-includes">What the $29 report includes</h2>
+      <p>About 25 automated checks of your live website, grouped into six areas:</p>
+      <div class="cols">
+        <div class="box">
+          <h3>What gets checked</h3>
+          <ul class="checklist">
+            <li><strong>Speed</strong> — server response time, page weight, large images, scripts that block the page.</li>
+            <li><strong>Mobile</strong> — mobile viewport setup and tap-to-call phone links.</li>
+            <li><strong>SEO basics</strong> — page title, meta description, headings, business schema, HTTPS, robots.txt and sitemap.</li>
+            <li><strong>Contact path</strong> — phone number up top, contact forms, how many clicks to reach you, hours and service area.</li>
+            <li><strong>Reviews</strong> — whether your site shows customer reviews or testimonials.</li>
+            <li><strong>Trust signals</strong> — about info, license and insurance mentions, image descriptions, social links, guarantees, broken links.</li>
+          </ul>
+        </div>
+        <div class="box">
+          <h3>What you get</h3>
+          <ul class="checklist">
+            <li>A grade and score out of 100, with a score for each area.</li>
+            <li>Every problem ranked by how much it matters, with a plain-English fix and an effort estimate.</li>
+            <li>A list of what already passed.</li>
+            <li>A printable PDF you can hand to whoever runs your site.</li>
+            <li>Instant: the report appears on screen right after checkout. No account, no call, no waiting for an email.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-not">
+    <div class="wrap">
+      <h2 id="h-not">What it does not measure</h2>
+      <p>Every finding is a real automated measurement of your live site. Some things need a full browser or access we don't have, so the report lists them as <strong>not measured</strong> instead of guessing:</p>
+      <ul class="checklist">
+        <li>Core Web Vitals (loading, layout shift and responsiveness as Google measures them in a real browser).</li>
+        <li>Tap-target sizes and how the page actually looks on a phone screen.</li>
+        <li>Your Google Business Profile, your star ratings on Google, Yelp or other sites, and your search rankings.</li>
+        <li>Your traffic, ads, or how many calls and leads you actually get.</li>
+        <li>Whether your contact form really delivers messages (we never submit your forms).</li>
+        <li>A full accessibility audit or a security test.</li>
+      </ul>
+      <p class="muted">The checker reads your homepage and a small number of linked pages. It is not a full-site crawl.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-sample">
+    <div class="wrap">
+      <h2 id="h-sample">What a finding looks like</h2>
+      <span class="example-label">Example from a fictional test site</span>
+      <article class="finding sev-border-critical">
+        <div><span class="sev sev-critical">Critical</span> <span class="muted small">Check 2.4</span></div>
+        <h3>No tap-to-call button</h3>
+        <dl>
+          <dt>What we measured</dt>
+          <dd>no tel: links on homepage</dd>
+          <dt>Why it matters</dt>
+          <dd>If your number is not a tap-to-call link, a phone visitor has to copy it by hand, and some won't bother.</dd>
+          <dt>How to fix it</dt>
+          <dd>Wrap the phone number in a tel: link (ideally a sticky call button on mobile) so a caller reaches you in one tap.</dd>
+          <dt>Effort</dt>
+          <dd>DIY, ~15 minutes</dd>
+        </dl>
+      </article>
+    </div>
+  </section>
+
+  <section id="price" aria-labelledby="h-price">
+    <div class="wrap">
+      <h2 id="h-price">Price</h2>
+      <div class="price-box">
+        <p class="price" data-price>$29</p>
+        <p class="muted">One-time payment. Not a subscription.</p>
+        <ul class="checklist">
+          <li>Full report for one website, on screen right away</li>
+          <li>Printable PDF download</li>
+          <li>Automatic refund if the checker can't reach your site</li>
+        </ul>
+        <form id="buy-form" class="check-form" novalidate>
+          <label for="buy-url">Website to check</label>
+          <div class="field-row">
+            <input id="buy-url" name="url" type="text" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" maxlength="300" placeholder="yourbusiness.com" required>
+            <button id="buy-btn" class="btn" type="submit" disabled>Buy the full report</button>
+          </div>
+        </form>
+        <p id="buy-status" class="status" role="status" aria-live="polite" hidden></p>
+        <p class="muted small">You pay on Square's secure checkout page by card, Cash App Pay, Apple Pay or Google Pay, where available. We never see your card details.</p>
+        <p id="pay-unavailable" class="small" hidden>Checkout isn't switched on yet. Please come back soon.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq" aria-labelledby="h-faq">
+    <div class="wrap">
+      <h2 id="h-faq">Questions</h2>
+      <dl class="faq">
+        <dt>Do I have to talk to anyone?</dt>
+        <dd>No. There are no calls or meetings. You run the check, pay on Square's checkout, and your report appears on screen.</dd>
+        <dt>How fast is it?</dt>
+        <dd>A minute or two. If the checker has been idle, the first check of the hour can take up to a minute to start.</dd>
+        <dt>What if my site can't be reached?</dt>
+        <dd>If the checker can't reach your site after you pay, the report page offers a button that refunds you automatically.</dd>
+        <dt>Is this a subscription?</dt>
+        <dd>No. You pay once for one report.</dd>
+        <dt>Do you change my site?</dt>
+        <dd>No. The checker is read-only. It makes a few polite requests to your site, the same way a visitor's browser would, and never logs in or submits forms.</dd>
+        <dt>Can I check someone else's site?</dt>
+        <dd>Only check websites you own or are allowed to check.</dd>
+        <dt>Is this professional advice?</dt>
+        <dd>No. It is automated information about your website. It doesn't guarantee rankings or sales.</dd>
+      </dl>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <nav aria-label="Legal">
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="find.html">Find my report</a>
+    </nav>
+    <p>Apex Forge · Villa Park, Illinois</p>
+  </div>
+</footer>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

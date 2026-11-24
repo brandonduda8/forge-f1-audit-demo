@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<!-- DRAFT: Brandon should read before publishing; not legal advice -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; form-action 'self'; base-uri 'none'">
+<title>Privacy — Apex Forge Website Checkup</title>
+<meta name="description" content="What Apex Forge Website Checkup collects, how long it keeps it, and what it never collects.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Apex <span>Forge</span> Website Checkup</a>
+  </div>
+</header>
+
+<main id="main">
+  <section>
+    <div class="wrap legal">
+      <h1>Privacy</h1>
+      <p>Short version: we collect the website address you submit, and not much else.</p>
+
+      <h2>What we collect</h2>
+      <ul>
+        <li><strong>The website address you submit</strong>, for the free check or at checkout, and the results of checking it.</li>
+        <li><strong>Payment details are handled by Square.</strong> Square collects your card or Cash App details and your email on its own checkout page. We never see or store your card number. Square's own privacy policy covers what Square does. We use the email Square gives us only to help you find a lost report link.</li>
+        <li>Like any web server, the server may briefly see your IP address and browser type to answer requests and limit abuse.</li>
+      </ul>
+
+      <h2>How long we keep it</h2>
+      <p>Reports are kept in server memory only. They are lost whenever the server restarts, and are kept for at most 30 days. There is no database of customers.</p>
+
+      <h2>What the checker does to your website</h2>
+      <p>The checker makes a few read-only requests to the website you submit, much like a visitor's browser. It never logs in, never submits forms and never changes anything.</p>
+
+      <h2>What we don't do</h2>
+      <ul>
+        <li>No cookies.</li>
+        <li>No analytics or tracking scripts.</li>
+        <li>No ads, and we don't sell or share your information.</li>
+      </ul>
+
+      <h2>Contact</h2>
+      <p data-if-no-support>There's no phone line or chat. For a problem with a paid report, use the refund button on your report page.</p>
+      <p data-if-support hidden>For a privacy question, email <span data-support>the support address</span>.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <nav aria-label="Legal">
+      <a href="index.html">Home</a>
+      <a href="terms.html">Terms</a>
+      <a href="find.html">Find my report</a>
+    </nav>
+    <p>Apex Forge · Villa Park, Illinois</p>
+  </div>
+</footer>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="legal.js"></script>
+</body>
+</html>
