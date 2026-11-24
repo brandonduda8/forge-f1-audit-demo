@@ -1,4 +1,4 @@
-"""Local test servers: fixture websites and a fake Stripe API (loopback only)."""
+"""Local test servers: fixture websites and a fake Square API (loopback only)."""
 import http.server
 import json
 import os
@@ -69,16 +69,23 @@ def serve_site(name):
     return serve(partial(_Quiet, directory=os.path.join(FIX, name)))
 
 
-class FakeStripe:
-    """Just enough of api.stripe.com for the checkup: sessions + refunds."""
+LOC = "LTESTLOCATION01"
+MARKER = "apex-checkup-v1"
 
-    def __init__(self):
-        self.sessions = {}
-        self.pis = {}              # payment_intent id -> {"metadata", "refunded"}
-        self.refunds = []          # (headers, form)
-        self.pi_updates = []       # (pi, form)
-        self.lists = []            # query dicts of list calls
-        self.auth_seen = set()
+
+class FakeSquare:
+    """Just enough of Square's API for the checkup: payment links, orders, payments, refunds."""
+
+    def __init__(self, page_size=4, refund_status="PENDING"):
+        self.orders, self.payments = {}, {}
+        self.links = []            # bodies of payment-link calls
+        self.order_puts = []       # (order_id, body)
+        self.refunds = []          # bodies of refund calls
+        self.lists = []            # query dicts of payment list calls
+        self.headers_seen = []     # (Authorization, Square-Version)
+        self.page_size, self.refund_status = page_size, refund_status
+        self._refund_by_key = {}
+        self._n = 0
         fake = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -93,74 +100,113 @@ class FakeStripe:
                 self.end_headers()
                 self.wfile.write(b)
 
+            def _missing(self):
+                return self._send(404, {"errors": [{"category": "INVALID_REQUEST_ERROR", "code": "NOT_FOUND"}]})
+
+            def _body(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                return json.loads(self.rfile.read(n).decode() or "{}")
+
+            def _seen(self):
+                fake.headers_seen.append((self.headers.get("Authorization"), self.headers.get("Square-Version")))
+
             def do_GET(self):
-                fake.auth_seen.add(self.headers.get("Authorization"))
+                self._seen()
                 path, _, query = self.path.partition("?")
                 q = urllib.parse.parse_qs(query)
-                pre = "/v1/checkout/sessions/"
-                if path == "/v1/checkout/sessions":
+                if path.startswith("/v2/orders/"):
+                    o = fake.orders.get(urllib.parse.unquote(path[len("/v2/orders/"):]))
+                    return self._send(200, {"order": o}) if o else self._missing()
+                if path == "/v2/payments":
                     fake.lists.append(q)
-                    email = (q.get("customer_details[email]") or [""])[0]
-                    link = (q.get("payment_link") or [""])[0]
-                    data = [fake.view(s, False) for s in fake.sessions.values()
-                            if s.get("customer_details", {}).get("email") == email and s["payment_link"] == link]
-                    return self._send(200, {"object": "list", "data": data, "has_more": False})
-                if path.startswith(pre):
-                    sid = urllib.parse.unquote(path[len(pre):])
-                    if sid in fake.sessions:
-                        expand = "payment_intent.latest_charge" in q.get("expand[]", [])
-                        return self._send(200, fake.view(fake.sessions[sid], expand))
-                return self._send(404, {"error": {"type": "invalid_request_error", "code": "resource_missing"}})
+                    rows = sorted((p for p in fake.payments.values() if p["location_id"] == (q.get("location_id") or [""])[0]),
+                                  key=lambda p: p["created_at"], reverse=True)
+                    start = int((q.get("cursor") or ["0"])[0])
+                    page = rows[start:start + fake.page_size]
+                    out = {"payments": page}
+                    if start + fake.page_size < len(rows):
+                        out["cursor"] = str(start + fake.page_size)
+                    return self._send(200, out)
+                if path.startswith("/v2/payments/"):
+                    p = fake.payments.get(urllib.parse.unquote(path[len("/v2/payments/"):]))
+                    return self._send(200, {"payment": p}) if p else self._missing()
+                return self._missing()
+
+            def do_PUT(self):
+                self._seen()
+                body = self._body()
+                if self.path.startswith("/v2/orders/"):
+                    oid = urllib.parse.unquote(self.path[len("/v2/orders/"):])
+                    o = fake.orders.get(oid)
+                    if not o:
+                        return self._missing()
+                    upd = body.get("order") or {}
+                    if upd.get("version") != o["version"]:
+                        return self._send(400, {"errors": [{"code": "VERSION_MISMATCH"}]})
+                    fake.order_puts.append((oid, body))
+                    o["metadata"].update(upd.get("metadata") or {})
+                    o["version"] += 1
+                    return self._send(200, {"order": o})
+                return self._missing()
 
             def do_POST(self):
-                fake.auth_seen.add(self.headers.get("Authorization"))
-                n = int(self.headers.get("Content-Length") or 0)
-                form = urllib.parse.parse_qs(self.rfile.read(n).decode())
-                if self.path.startswith("/v1/payment_intents/"):
-                    pi = urllib.parse.unquote(self.path.rsplit("/", 1)[1])
-                    if pi not in fake.pis:
-                        return self._send(404, {"error": {"code": "resource_missing"}})
-                    fake.pi_updates.append((pi, form))
-                    for k, v in form.items():
-                        if k.startswith("metadata["):
-                            fake.pis[pi]["metadata"][k[9:-1]] = v[0]
-                    return self._send(200, {"id": pi, "metadata": fake.pis[pi]["metadata"]})
-                if self.path == "/v1/refunds":
-                    idem = self.headers.get("Idempotency-Key")
-                    first = all(h.get("Idempotency-Key") != idem for h, _ in fake.refunds)
-                    fake.refunds.append((dict(self.headers), form))
-                    pi = (form.get("payment_intent") or [""])[0]
-                    if pi in fake.pis:
-                        fake.pis[pi]["refunded"] = True
-                    if not first:
-                        return self._send(200, {"id": "re_1", "status": "succeeded", "replayed": True})
-                    return self._send(200, {"id": "re_1", "status": "succeeded"})
-                return self._send(404, {"error": {"code": "resource_missing"}})
+                self._seen()
+                body = self._body()
+                if self.path == "/v2/online-checkout/payment-links":
+                    fake.links.append(body)
+                    fake._n += 1
+                    oid = "ORDLINK%020d" % fake._n
+                    o = dict(body["order"])
+                    o.update(id=oid, version=1, state="OPEN", metadata=dict(o.get("metadata") or {}))
+                    fake.orders[oid] = o
+                    return self._send(200, {"payment_link": {"id": "PL%d" % fake._n, "order_id": oid,
+                                                             "url": fake.base + "/checkout/" + oid}})
+                if self.path == "/v2/refunds":
+                    key = body.get("idempotency_key")
+                    fake.refunds.append(body)
+                    if key in fake._refund_by_key:
+                        return self._send(200, {"refund": fake._refund_by_key[key]})
+                    p = fake.payments.get(body.get("payment_id"))
+                    if not p:
+                        return self._missing()
+                    if p.get("refund_ids"):
+                        return self._send(400, {"errors": [{"code": "REFUND_AMOUNT_INVALID"}]})
+                    r = {"id": "R%d" % len(fake._refund_by_key), "status": fake.refund_status,
+                         "payment_id": p["id"], "amount_money": body.get("amount_money")}
+                    fake._refund_by_key[key] = r
+                    p["refund_ids"] = [r["id"]]
+                    p["refunded_money"] = dict(body.get("amount_money") or {})
+                    return self._send(200, {"refund": r})
+                return self._missing()
 
         self.srv, self.base = serve(H)
 
-    def view(self, sess, expand):
-        out = dict(sess)
-        pi = sess["payment_intent"]
-        if expand and pi in self.pis:
-            st = self.pis[pi]
-            out["payment_intent"] = {"id": pi, "object": "payment_intent", "metadata": dict(st["metadata"]),
-                                     "latest_charge": {"id": "ch_" + pi[3:], "refunded": st["refunded"],
-                                                       "amount_refunded": 2900 if st["refunded"] else 0}}
-        return out
+    def add(self, order_id, website, *, paid=True, location=LOC, marker=MARKER, created=None,
+            amount=2900, currency="USD", email="buyer@example.com", delivered=False):
+        """An order as the hosted checkout leaves it; paid=True adds its COMPLETED payment."""
+        meta = {"apex": marker, "website": website} if marker else {"website": website}
+        if delivered:
+            meta["apex_report_delivered"] = "1"
+        self.orders[order_id] = {"id": order_id, "location_id": location, "metadata": meta,
+                                 "version": 3, "state": "OPEN"}
+        if paid is not None:
+            self.pay(order_id, paid=paid, created=created, amount=amount, currency=currency, email=email)
 
-    def add(self, sid, website, *, link="plink_test_checkup", paid=True, live=False, created=None,
-            pi="pi_test_1", email="buyer@example.com"):
+    def pay(self, order_id, *, paid=True, created=None, amount=None, currency="USD", email="buyer@example.com"):
         import time
-        self.pis.setdefault(pi, {"metadata": {}, "refunded": False})
-        self.sessions[sid] = {
-            "id": sid, "object": "checkout.session", "livemode": live,
-            "status": "complete" if paid else "open",
-            "payment_status": "paid" if paid else "unpaid",
-            "payment_link": link, "payment_intent": pi,
-            "customer_details": {"email": email},
-            "created": int(created if created is not None else time.time() - 60),
-            "custom_fields": [{"key": "website", "label": {"custom": "Website", "type": "custom"},
-                               "type": "text", "optional": False,
-                               "text": {"value": website, "maximum_length": 255}}],
+        o = self.orders[order_id]
+        pid = "PAY" + order_id[-20:]
+        ts = time.time() - 60 if created is None else created
+        if amount is None:
+            amount = (o.get("line_items") or [{}])[0].get("base_price_money", {}).get("amount", 2900)
+        self.payments[pid] = {
+            "id": pid, "order_id": order_id, "location_id": o["location_id"],
+            "status": "COMPLETED" if paid else "APPROVED",
+            "amount_money": {"amount": amount, "currency": currency},
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(ts)),
+            "buyer_email_address": email,
         }
+        o["tenders"] = [{"id": "T" + pid, "payment_id": pid, "type": "CARD"}]
+        if paid:
+            o["state"] = "COMPLETED"
+        return pid

@@ -57,18 +57,19 @@
 
     var cta = el(doc, "div", { className: "btn-row" });
     if (cfg && cfg.payOk) {
-      cta.appendChild(el(doc, "a", {
+      cta.appendChild(el(doc, "button", {
         className: "btn",
-        href: cfg.paymentLink,
-        text: "Get the full report — " + cfg.price
+        text: "Get the full report for " + site + " — " + cfg.price,
+        attrs: { type: "button", "data-buy-checked": "" }
       }));
     } else {
       cta.appendChild(el(doc, "a", { className: "btn", href: "#price", text: "See the full report" }));
     }
     wrap.appendChild(cta);
+    wrap.appendChild(el(doc, "p", { className: "status", attrs: { "data-buy-status": "", hidden: "" } }));
     wrap.appendChild(el(doc, "p", {
-      className: "small",
-      text: "On the checkout page, type the same website address: " + site
+      className: "muted small",
+      text: "You pay on Square's secure checkout page. We never see your card details."
     }));
     return wrap;
   }
@@ -89,19 +90,40 @@
       catch (e) { /* ignore */ }
     }
 
-    // Buy buttons and price labels.
-    Array.prototype.forEach.call(doc.querySelectorAll("[data-buy]"), function (a) {
-      if (cfg.payOk) {
-        a.setAttribute("href", cfg.paymentLink);
-        a.removeAttribute("aria-disabled");
-      } else {
-        a.setAttribute("href", "#price");
-        a.setAttribute("aria-disabled", "true");
-      }
-    });
     Array.prototype.forEach.call(doc.querySelectorAll("[data-price]"), function (n) { n.textContent = cfg.price; });
     var payNote = doc.getElementById("pay-unavailable");
     if (payNote) payNote.hidden = cfg.payOk;
+
+    // Buying: our API makes a Square checkout for the website, then the browser goes there.
+    function buy(btn, website, statusNode) {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      if (statusNode) {
+        statusNode.textContent = "Opening the secure checkout…";
+        statusNode.className = "status";
+        statusNode.hidden = false;
+      }
+      C.startCheckout(win, cfg, website).then(function (r) {
+        if (r.ok) return;
+        btn.disabled = false;
+        if (statusNode) {
+          statusNode.textContent = r.message;
+          statusNode.className = "status error";
+          statusNode.hidden = false;
+        }
+      });
+    }
+    var buyForm = doc.getElementById("buy-form");
+    var buyUrl = doc.getElementById("buy-url");
+    var buyBtn = doc.getElementById("buy-btn");
+    var buyStatus = doc.getElementById("buy-status");
+    if (buyForm && buyUrl && buyBtn) {
+      buyBtn.disabled = !cfg.payOk;
+      buyForm.addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        buy(buyBtn, buyUrl.value, buyStatus);
+      });
+    }
 
     var form = doc.getElementById("check-form");
     var input = doc.getElementById("site-url");
@@ -154,6 +176,9 @@
             status.hidden = true;
             result.appendChild(renderMiniResult(doc, r.data, cfg));
             result.hidden = false;
+            if (buyUrl && !buyUrl.value) buyUrl.value = value;
+            var cb = result.querySelector("[data-buy-checked]");
+            if (cb) cb.addEventListener("click", function () { buy(cb, value, result.querySelector("[data-buy-status]")); });
             if (result.focus) result.focus();
           } else {
             showStatus(friendlyStatusMessage(r.status, r.data), true, false);

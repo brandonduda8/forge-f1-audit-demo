@@ -205,13 +205,56 @@ def test_unreachable_site_is_fatal_not_scored():
     assert res["ok"] is False and res["fatal"] is True and "score" not in res
 
 
-def test_website_field_by_key_or_single_text_field(monkeypatch):
-    import stripe_api
-    monkeypatch.delenv("STRIPE_WEBSITE_FIELD", raising=False)
-    f = lambda key, val: {"key": key, "type": "text", "text": {"value": val}}
-    assert stripe_api.website_from_session({"custom_fields": [f("website", " a.com ")]}) == "a.com"
-    assert stripe_api.website_from_session({"custom_fields": [f("yourwebsite", "b.com")]}) == "b.com"
-    two = {"custom_fields": [f("x", "c.com"), f("y", "d.com")]}
-    assert stripe_api.website_from_session(two) is None          # ambiguous: refuse, don't guess
-    assert stripe_api.website_from_session({"custom_fields": [f("x", "c.com"), f("website", "e.com")]}) == "e.com"
-    assert stripe_api.website_from_session({}) is None
+def test_square_webhook_signature(monkeypatch):
+    import base64
+    import hashlib
+    import hmac
+    import square_api
+    monkeypatch.setenv("SQUARE_WEBHOOK_SIGNATURE_KEY", "k1")
+    monkeypatch.setenv("SQUARE_WEBHOOK_URL", "https://api.example/api/square/webhook")
+    body = b'{"type":"payment.updated"}'
+    good = base64.b64encode(hmac.new(b"k1", b"https://api.example/api/square/webhook" + body, hashlib.sha256).digest()).decode()
+    assert square_api.verify_webhook(body, good)
+    assert not square_api.verify_webhook(body + b" ", good)
+    assert not square_api.verify_webhook(body, "")
+    assert not square_api.verify_webhook(body, good[:-2] + "AA")
+    monkeypatch.delenv("SQUARE_WEBHOOK_SIGNATURE_KEY")
+    assert not square_api.verify_webhook(body, good)          # no key configured: refuse everything
+
+
+def test_square_event_and_checkout_host_checks(monkeypatch):
+    import square_api
+    monkeypatch.delenv("SELFSERVE_TEST_ALLOW_LOOPBACK", raising=False)
+    ev = {"type": "payment.updated", "data": {"object": {"payment": {"order_id": "ORD" + "A" * 22, "status": "COMPLETED"}}}}
+    assert square_api.paid_order_id_from_event(ev) == "ORD" + "A" * 22
+    ev["data"]["object"]["payment"]["status"] = "APPROVED"
+    assert square_api.paid_order_id_from_event(ev) is None
+    assert square_api.paid_order_id_from_event({"type": "refund.updated"}) is None
+    assert square_api.paid_order_id_from_event("junk") is None
+    ok = square_api.checkout_url_ok
+    assert ok("https://square.link/u/AbC123") and ok("https://checkout.square.site/merchant/x/checkout/Y")
+    assert ok("https://sandbox.square.link/u/x")
+    for bad in ("http://square.link/u/x", "https://square.link.evil.example/u/x", "https://evilsquare.link/x",
+                "https://127.0.0.1/x", "javascript:alert(1)"):
+        assert not ok(bad), bad
+
+
+def test_square_api_base_must_be_https(monkeypatch):
+    import square_api
+    monkeypatch.delenv("SELFSERVE_TEST_ALLOW_LOOPBACK", raising=False)
+    for k, v in {"SQUARE_ACCESS_TOKEN": "t", "SQUARE_LOCATION_ID": "L1", "SQUARE_ENV": "sandbox",
+                 "SQUARE_API_BASE": "http://example.test"}.items():
+        monkeypatch.setenv(k, v)
+    with pytest.raises(RuntimeError):
+        square_api.get_paid_order("ORD" + "A" * 22)
+    monkeypatch.delenv("SQUARE_API_BASE")
+    monkeypatch.setenv("SQUARE_ENV", "staging")
+    with pytest.raises(square_api.SquareUnavailable):        # unknown environment: not configured
+        square_api.get_paid_order("ORD" + "A" * 22)
+
+
+def test_square_price_is_clamped(monkeypatch):
+    import square_api
+    for raw, want in (("2900", 2900), ("100", 100), ("99", 2900), ("abc", 2900), ("100001", 2900)):
+        monkeypatch.setenv("CHECKUP_PRICE_CENTS", raw)
+        assert square_api.price_cents() == want

@@ -4,7 +4,7 @@
   "use strict";
 
   var C = (typeof module !== "undefined" && module.exports) ? require("./common.js") : window.ApexCommon;
-  var PATH_RE = /^report\.html\?session_id=cs_(test|live)_[A-Za-z0-9]{10,200}$/;
+  var PATH_RE = /^report\.html\?order_id=[A-Za-z0-9_-]{10,64}$/;
 
   function renderMatches(doc, list, data) {
     C.clear(list);

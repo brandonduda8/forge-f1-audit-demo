@@ -4,10 +4,14 @@
 Endpoints (all JSON unless noted; CORS allowed for SITE_ORIGIN only):
   GET  /health                         {"ok": true}  (the page calls this to wake a sleeping free server)
   POST /api/check   {"url": "..."}     free mini-check: grade, score, top 3 problem titles
-  GET  /api/report?session_id=cs_...   paid report for the website typed at checkout
-  GET  /api/report.pdf?session_id=...  the same report as a PDF (application/pdf)
-  POST /api/refund  {"session_id": ..} automatic full refund, only when the site could not be reached
-  POST /api/find    {"email", "website"} find a lost report link (paid sessions for that email and site)
+  POST /api/checkout {"url": "..."}    makes a Square hosted checkout for that website; returns its URL
+  GET  /api/report?order_id=...        paid report for the website on that Square order
+  GET  /api/report.pdf?order_id=...    the same report as a PDF (application/pdf)
+  POST /api/refund  {"order_id": ...}  automatic full refund, only when the site could not be reached
+  POST /api/find    {"email", "website"} find a lost report link (paid orders for that email and site)
+  POST /api/square/webhook             Square payment events (signature checked); starts the report early
+
+Card data never reaches this server: buyers pay on Square's hosted checkout page.
 
 Every audit runs in a separate short-lived process (runner.py) with the
 network guard installed and without any secret in its environment.
@@ -20,7 +24,8 @@ Environment:
                     free-check limit; the per-site and overall limits still cap the cost.
   CLIENT_IP_HEADER  optional: a header the host sets to the real client address (used first)
   FREE_WORKERS / PAID_WORKERS  concurrent checks of each kind (default 1 each)
-  STRIPE_SECRET_KEY, STRIPE_PAYMENT_LINK_ID, STRIPE_WEBSITE_FIELD  see stripe_api.py
+  SQUARE_ACCESS_TOKEN, SQUARE_ENV, SQUARE_LOCATION_ID, SQUARE_WEBHOOK_SIGNATURE_KEY,
+  SQUARE_WEBHOOK_URL, CHECKUP_PRICE_CENTS   see square_api.py
 """
 import json
 import os
@@ -37,7 +42,7 @@ from urllib.parse import parse_qs, urlparse
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, HERE)
-import stripe_api  # noqa: E402
+import square_api as pay  # noqa: E402
 
 RUNNER = os.path.join(HERE, "runner.py")
 RENDER_PDF = os.path.join(REPO, "f1-audit-product", "tools", "render_pdf.py")
@@ -51,11 +56,11 @@ REPORT_TTL = 30 * 24 * 3600
 
 # in-memory state (lost on restart; a paid report is simply re-run)
 _lock = threading.Lock()
-_reports = OrderedDict()        # session_id -> {"at", "result"}
-_pdfs = OrderedDict()           # session_id -> bytes
-_fatal = {}                     # session_id -> time the paid run could not reach the site
+_reports = OrderedDict()        # order_id -> {"at", "result"}
+_pdfs = OrderedDict()           # order_id -> bytes
+_fatal = {}                     # order_id -> time the paid run could not reach the site
 _hits = defaultdict(deque)      # rate-limit key -> deque of timestamps
-_inflight = {}                  # session_id -> lock, so parallel loads share one run
+_inflight = {}                  # order_id -> lock, so parallel loads share one run
 MAX_CACHE = 500
 
 def _env_int(name, default):
@@ -70,10 +75,12 @@ LIMITS = {                      # key prefix -> (max events, window seconds)
     "free-host": (_env_int("LIMIT_FREE_PER_SITE", 3), 3600),
     "free-all": (_env_int("LIMIT_FREE_TOTAL", 60), 3600),
     "paid-session": (4, 3600),
-    "paid-ip": (30, 3600),      # report lookups that miss the cache (each asks Stripe)
+    "paid-ip": (30, 3600),      # report lookups that miss the cache (each asks Square)
     "refund-session": (3, 3600),
     "find-ip": (10, 3600),
     "find-email": (5, 3600),
+    "checkout-ip": (_env_int("LIMIT_CHECKOUT_PER_IP", 10), 3600),
+    "checkout-all": (_env_int("LIMIT_CHECKOUT_TOTAL", 200), 3600),
 }
 
 
@@ -99,7 +106,7 @@ def _cache_put(store, key, val):
 
 
 def worker_env():
-    """Only what the runner needs. No Stripe key, no proxies."""
+    """Only what the runner needs. No Square token, no proxies."""
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8",
            "HOME": tempfile.gettempdir(), "PYTHONDONTWRITEBYTECODE": "1"}
     if os.environ.get("SELFSERVE_TEST_ALLOW_LOOPBACK") == "1":
@@ -143,7 +150,7 @@ def render_pdf(markdown):
 def public_report(sid, res):
     keep = ("site", "url", "final_url", "redirects", "requests_made", "score", "grade", "measured_at", "report")
     out = {k: res[k] for k in keep if k in res}
-    out.update(ok=True, pdf_url="/api/report.pdf?session_id=" + sid)
+    out.update(ok=True, pdf_url="/api/report.pdf?order_id=" + sid)
     return out
 
 
@@ -173,10 +180,10 @@ def _paid_run(sid, ip):
     if not allow("paid-ip", ip):
         return 429, {"ok": False, "error": "Too many report requests. Try again in an hour."}
     try:
-        sess = stripe_api.get_paid_session(sid)
-    except stripe_api.PaymentError as e:
+        sess = pay.get_paid_order(sid)
+    except pay.PaymentError as e:
         return 402, {"ok": False, "error": str(e)}
-    except stripe_api.StripeUnavailable:
+    except pay.SquareUnavailable:
         return 503, {"ok": False, "error": "We couldn't confirm the payment just now. Try again in a minute."}
     if sess.get("refunded"):
         return 402, {"ok": False, "error": "This payment was refunded, so this report link no longer works."}
@@ -195,7 +202,7 @@ def _paid_run(sid, ip):
         return 503, {"ok": False, "error": res.get("error", "The check failed. Try again in a minute.")}
     with _lock:
         _fatal.pop(sid, None)
-    if not sess.get("delivered") and not stripe_api.mark_delivered(sess.get("payment_intent")):
+    if not sess.get("delivered") and not pay.mark_delivered(sess):
         sys.stderr.write("warning: could not record report delivery on the payment\n")
     _cache_put(_reports, sid, {"at": time.time(), "result": res})
     return 200, public_report(sid, res)
@@ -205,10 +212,10 @@ def do_refund(sid):
     if not allow("refund-session", sid):
         return 429, {"ok": False, "error": "Too many refund attempts. Try again in an hour."}
     try:
-        sess = stripe_api.get_paid_session(sid)
-    except stripe_api.PaymentError as e:
+        sess = pay.get_paid_order(sid)
+    except pay.PaymentError as e:
         return 402, {"ok": False, "error": str(e)}
-    except stripe_api.StripeUnavailable:
+    except pay.SquareUnavailable:
         return 503, {"ok": False, "error": "We couldn't reach the payment system. Try again in a minute."}
     if sess.get("refunded"):
         _forget(sid)
@@ -228,10 +235,10 @@ def do_refund(sid):
         if not (res.get("fatal") or res.get("input_error")):
             return 503, {"ok": False, "error": "We couldn't confirm the problem just now. Try again in a minute."}
     try:
-        status = stripe_api.refund(sess["payment_intent"], sid)
-    except stripe_api.PaymentError as e:
+        status = pay.refund(sess)
+    except pay.PaymentError as e:
         return 402, {"ok": False, "error": str(e)}
-    except stripe_api.StripeUnavailable:
+    except pay.SquareUnavailable:
         return 503, {"ok": False, "error": "The refund didn't go through just now. Try again in a minute."}
     _forget(sid)
     return 200, {"ok": True, "status": status}
@@ -259,10 +266,10 @@ def runner_normalize(raw):
 
 def find_reports(email, website):
     try:
-        found = stripe_api.find_sessions(email)
-    except stripe_api.PaymentError as e:
+        found = pay.find_orders(email)
+    except pay.PaymentError as e:
         return 400, {"ok": False, "error": str(e)}
-    except stripe_api.StripeUnavailable:
+    except pay.SquareUnavailable:
         return 503, {"ok": False, "error": "We couldn't reach the payment system. Try again in a minute."}
     want = site_key(website)
     hits = [f for f in found if want and site_key(f["website"]) == want]
@@ -270,8 +277,45 @@ def find_reports(email, website):
         return 404, {"ok": False, "error": "We couldn't find a report for that email and website in the last 30 days. "
                                            "Use the email you typed at checkout."}
     return 200, {"ok": True, "reports": [
-        {"site": want, "created": h["created"], "path": "report.html?session_id=" + h["session_id"]}
+        {"site": want, "created": h["created"], "path": "report.html?order_id=" + h["order_id"]}
         for h in hits[:5]]}
+
+
+def start_checkout(raw_url):
+    """Normalize the website first, so a buyer only ever pays for an address we can check."""
+    try:
+        url = runner_normalize(raw_url)
+    except ValueError as e:
+        return 400, {"ok": False, "error": str(e)}
+    origin = os.environ.get("SITE_ORIGIN", "").rstrip("/")
+    if not origin:
+        return 503, {"ok": False, "error": "Checkout isn't switched on yet."}
+    try:
+        link, order_id = pay.create_checkout(url, origin + "/report.html")
+    except pay.SquareUnavailable:
+        return 503, {"ok": False, "error": "We couldn't open the checkout just now. Try again in a minute."}
+    return 200, {"ok": True, "checkout_url": link, "order_id": order_id}
+
+
+def prewarm(order_id):
+    """A payment completed: build the report now, so it's ready when the buyer lands."""
+    try:
+        paid_result(order_id, "webhook")
+    except Exception as e:  # a background run must never take the server down
+        sys.stderr.write(f"prewarm failed: {type(e).__name__}\n")
+
+
+def handle_webhook(raw, signature):
+    if not pay.verify_webhook(raw, signature):
+        return 401, {"ok": False}
+    try:
+        event = json.loads(raw.decode())
+    except Exception:
+        return 400, {"ok": False}
+    oid = pay.paid_order_id_from_event(event)
+    if oid and _cached(oid) is None:
+        threading.Thread(target=prewarm, args=(oid,), daemon=True).start()
+    return 200, {"ok": True}
 
 
 def client_ip(handler):
@@ -289,7 +333,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "ApexCheckup/1"
     sys_version = ""
 
-    def log_message(self, fmt, *args):  # path only, never the query (session ids)
+    def log_message(self, fmt, *args):  # path only, never the query (order ids)
         try:
             path = urlparse(getattr(self, "path", "") or "").path[:80]
         except Exception:
@@ -340,14 +384,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         p = urlparse(self.path)
         q = parse_qs(p.query)
-        sid = (q.get("session_id") or [""])[0]
+        sid = (q.get("order_id") or q.get("orderId") or [""])[0]
         if p.path in ("/", "/health"):
             return self._send(200, {"ok": True, "service": "apex-checkup-api"})
         if p.path == "/api/report":
             code, payload = paid_result(sid, client_ip(self))
             return self._send(code, payload)
         if p.path == "/api/report.pdf":
-            if not stripe_api.SESSION_RE.match(sid):
+            if not pay.ORDER_RE.match(sid):
                 return self._send(400, {"ok": False, "error": "missing payment reference"})
             with _lock:
                 pdf = _pdfs.get(sid)
@@ -368,6 +412,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = urlparse(self.path)
+        if p.path == "/api/square/webhook":
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = 0
+            if n <= 0 or n > 65536:
+                return self._send(400, {"ok": False})
+            code, payload = handle_webhook(self.rfile.read(n),
+                                           self.headers.get("x-square-hmacsha256-signature", ""))
+            return self._send(code, payload)
         body = self._json_body()
         if body is None:
             return self._send(400, {"ok": False, "error": "bad request"})
@@ -397,9 +451,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(429, {"ok": False, "error": "Too many lookups. Try again in an hour."})
             code, payload = find_reports(email, website)
             return self._send(code, payload)
+        if p.path == "/api/checkout":
+            if not allow("checkout-ip", client_ip(self)) or not allow("checkout-all", "*"):
+                return self._send(429, {"ok": False, "error": "Too many checkouts started. Try again later."})
+            code, payload = start_checkout(str(body.get("url") or "")[:300])
+            return self._send(code, payload)
         if p.path == "/api/refund":
-            sid = str(body.get("session_id") or "")
-            if not stripe_api.SESSION_RE.match(sid):
+            sid = str(body.get("order_id") or "")
+            if not pay.ORDER_RE.match(sid):
                 return self._send(400, {"ok": False, "error": "missing payment reference"})
             code, payload = do_refund(sid)
             return self._send(code, payload)
@@ -407,11 +466,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def check_startup():
-    key = os.environ.get("STRIPE_SECRET_KEY", "")
-    if os.environ.get("SELFSERVE_TEST_ALLOW_LOOPBACK") == "1" and stripe_api.key_mode(key) == "live":
-        raise SystemExit("refusing to start: test loopback mode with a live Stripe key")
-    if key.startswith(("sk_live_", "sk_test_")):
-        sys.stderr.write("warning: use a restricted key (rk_...); see LAUNCH.md for its permissions\n")
+    if pay.env_name() is None:
+        raise SystemExit("refusing to start: SQUARE_ENV must be sandbox or production")
+    if os.environ.get("SELFSERVE_TEST_ALLOW_LOOPBACK") == "1" and pay.env_name() == "production":
+        raise SystemExit("refusing to start: test loopback mode with production Square")
+    if not os.environ.get("SQUARE_WEBHOOK_SIGNATURE_KEY"):
+        sys.stderr.write("warning: no webhook signature key, so reports start when the buyer lands\n")
 
 
 def main():

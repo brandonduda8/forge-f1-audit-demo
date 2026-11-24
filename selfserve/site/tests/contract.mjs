@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url);
 const C = require("../common.js");
 const R = require("../report.js");
 const A = require("../app.js");
-const cfg = C.getConfig({ APEX_CONFIG: { apiBase: "https://api.example.test", paymentLink: "https://buy.stripe.com/test_abc", price: "$29" } });
+const cfg = C.getConfig({ APEX_CONFIG: { apiBase: "https://api.example.test", price: "$29" } });
 
 const mini = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const rep = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
@@ -21,7 +21,7 @@ assert.ok(mt.includes(mini.grade), "mini result shows the grade");
 assert.ok(mt.includes(String(mini.score)), "mini result shows the score");
 for (const t of mini.top) assert.ok(mt.includes(t.title), "mini result shows top issue: " + t.title);
 
-const r = R.renderReport(doc, rep, cfg, rep.pdf_url.split("session_id=")[1]);
+const r = R.renderReport(doc, rep, cfg, rep.pdf_url.split("order_id=")[1]);
 const rt = r.textContent;
 assert.ok(rt.includes(rep.site), "report shows the site");
 assert.ok(rt.includes(rep.grade) && rt.includes(String(rep.score)), "report shows grade and score");

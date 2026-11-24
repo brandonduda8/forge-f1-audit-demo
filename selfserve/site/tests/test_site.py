@@ -15,7 +15,7 @@ CSS_FILES = sorted(f for f in os.listdir(SITE) if f.endswith(".css"))
 
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 EXPECTED_CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-                "connect-src https:; form-action 'self' https://buy.stripe.com; base-uri 'none'")
+                "connect-src https:; form-action 'self'; base-uri 'none'")
 URL_RE = re.compile(r"https?://([A-Za-z0-9.\-]+)", re.I)
 
 
@@ -128,11 +128,7 @@ def test_no_inline_scripts_styles_or_handlers(name):
 def test_no_external_urls(name):
     text = read(name)
     hosts = {h.lower() for h in URL_RE.findall(text)}
-    assert hosts <= {"buy.stripe.com"}, f"external hosts in {name}: {hosts}"
-    if name.endswith(".html"):
-        # buy.stripe.com may only appear inside the CSP meta tag
-        no_csp = re.sub(r'<meta http-equiv="Content-Security-Policy"[^>]*>', "", text)
-        assert "buy.stripe.com" not in no_csp
+    assert not hosts, f"external hosts in {name}: {hosts}"   # the Square checkout URL comes from our API
     assert "@import" not in text
     assert not re.search(r"url\(\s*['\"]?(https?:)?//", text)
 
@@ -179,12 +175,22 @@ def test_index_sample_is_labelled_fictional():
     assert "Example from a fictional test site" in read("index.html")
 
 
-def test_index_buy_box_note():
-    assert "On the checkout page, type the same website address." in read("index.html")
+def test_index_buy_box_asks_for_the_website_before_checkout():
+    html = read("index.html")
+    assert 'id="buy-form"' in html and 'id="buy-url"' in html and 'id="buy-btn"' in html
+    assert "We never see your card details." in html
+
+
+def test_no_card_fields_anywhere():
+    """Card details are only ever typed on Square's page."""
+    for name in HTML_FILES:
+        text = read(name).lower()
+        for word in ("cc-number", "cc-csc", "cc-exp", "card-number", "cvv"):
+            assert word not in text, f"{name} has a card field ({word})"
 
 
 def test_no_secrets():
-    pat = re.compile(r"(sk|rk)_(live|test)_[A-Za-z0-9]{8,}|whsec_[A-Za-z0-9]{8,}|-----BEGIN")
+    pat = re.compile(r"(sk|rk)_(live|test)_[A-Za-z0-9]{8,}|whsec_[A-Za-z0-9]{8,}|EAAA[A-Za-z0-9_-]{20,}|-----BEGIN")
     for root, _, files in os.walk(SITE):
         if "__pycache__" in root or ".pytest_cache" in root:
             continue
@@ -221,22 +227,17 @@ def parse_config(content):
     return json.loads(m.group(1))
 
 
-GOOD = {"APEX_API_BASE": "https://forge-api.onrender.com/", "APEX_PAYMENT_LINK": "https://buy.stripe.com/test_abc123",
-        "APEX_SUPPORT_EMAIL": "help@example.com"}
+GOOD = {"APEX_API_BASE": "https://forge-api.onrender.com/", "APEX_SUPPORT_EMAIL": "help@example.com"}
 
 
 @pytest.mark.parametrize("bad", [
     {},
-    {"APEX_API_BASE": "http://forge-api.onrender.com", "APEX_PAYMENT_LINK": GOOD["APEX_PAYMENT_LINK"]},
-    {"APEX_API_BASE": "forge-api.onrender.com", "APEX_PAYMENT_LINK": GOOD["APEX_PAYMENT_LINK"]},
-    {"APEX_API_BASE": "javascript:alert(1)", "APEX_PAYMENT_LINK": GOOD["APEX_PAYMENT_LINK"]},
-    {"APEX_API_BASE": "https://api.example.com/x?y=1", "APEX_PAYMENT_LINK": GOOD["APEX_PAYMENT_LINK"]},
-    {"APEX_API_BASE": GOOD["APEX_API_BASE"]},
-    {"APEX_API_BASE": GOOD["APEX_API_BASE"], "APEX_PAYMENT_LINK": "http://buy.stripe.com/abc"},
-    {"APEX_API_BASE": GOOD["APEX_API_BASE"], "APEX_PAYMENT_LINK": "https://evil.example.com/abc"},
-    {"APEX_API_BASE": GOOD["APEX_API_BASE"], "APEX_PAYMENT_LINK": "https://buy.stripe.com.evil.com/abc"},
-    {"APEX_API_BASE": GOOD["APEX_API_BASE"], "APEX_PAYMENT_LINK": "https://buy.stripe.com/"},
-    {"APEX_API_BASE": "https://user:pw@api.example.com", "APEX_PAYMENT_LINK": GOOD["APEX_PAYMENT_LINK"]},
+    {**GOOD, "APEX_API_BASE": "http://forge-api.onrender.com"},
+    {**GOOD, "APEX_API_BASE": "forge-api.onrender.com"},
+    {**GOOD, "APEX_API_BASE": "javascript:alert(1)"},
+    {**GOOD, "APEX_API_BASE": "https://api.example.com/x?y=1"},
+    {**GOOD, "APEX_API_BASE": "https://user:pw@api.example.com"},
+    {**GOOD, "APEX_CHECKOUT": "maybe"},
     {**GOOD, "APEX_SUPPORT_EMAIL": "not-an-email"},
     {**GOOD, "APEX_PRICE": "<script>"},
 ])
@@ -251,8 +252,10 @@ def test_build_config_writes_valid_config():
     proc, content = run_build({**GOOD, "APEX_SUPPORT_EMAIL": "help@example.com"})
     assert proc.returncode == 0, proc.stderr
     cfg = parse_config(content)
-    assert cfg == {"apiBase": "https://forge-api.onrender.com", "paymentLink": "https://buy.stripe.com/test_abc123",
+    assert cfg == {"apiBase": "https://forge-api.onrender.com", "checkout": True,
                    "price": "$29", "supportEmail": "help@example.com"}
+    proc, content = run_build({**GOOD, "APEX_CHECKOUT": "off"})
+    assert proc.returncode == 0 and parse_config(content)["checkout"] is False
 
 
 def test_build_config_custom_price_and_email_required():
@@ -269,12 +272,12 @@ def test_build_config_example_mode_needs_no_env():
     proc, content = run_build({}, "--example")
     assert proc.returncode == 0, proc.stderr
     cfg = parse_config(content)
-    assert cfg["paymentLink"].startswith("https://buy.stripe.com/")
+    assert cfg["checkout"] is True
     assert cfg["apiBase"].startswith("https://")
 
 
 def test_config_example_js_matches_shape():
     text = read("config.example.js")
     assert "window.APEX_CONFIG = {" in text
-    for key in ("apiBase", "paymentLink", "price", "supportEmail"):
+    for key in ("apiBase", "checkout", "price", "supportEmail"):
         assert f'"{key}"' in text

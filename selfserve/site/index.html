@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; form-action 'self' https://buy.stripe.com; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; form-action 'self'; base-uri 'none'">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <title>Apex Forge Website Checkup — free website check for local businesses</title>
 <meta name="description" content="Free 60-second check of your small business website: see your grade and top 3 issues. Get the full $29 automated report with ranked fixes and a PDF.">
@@ -124,9 +124,15 @@
           <li>Printable PDF download</li>
           <li>Automatic refund if the checker can't reach your site</li>
         </ul>
-        <a class="btn" href="#price" data-buy aria-disabled="true">Buy the full report</a>
-        <p class="small"><strong>On the checkout page, type the same website address.</strong></p>
-        <p class="muted small">Payment is handled by Stripe on its own checkout page. We never see your card number.</p>
+        <form id="buy-form" class="check-form" novalidate>
+          <label for="buy-url">Website to check</label>
+          <div class="field-row">
+            <input id="buy-url" name="url" type="text" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" maxlength="300" placeholder="yourbusiness.com" required>
+            <button id="buy-btn" class="btn" type="submit" disabled>Buy the full report</button>
+          </div>
+        </form>
+        <p id="buy-status" class="status" role="status" aria-live="polite" hidden></p>
+        <p class="muted small">You pay on Square's secure checkout page by card, Cash App Pay, Apple Pay or Google Pay, where available. We never see your card details.</p>
         <p id="pay-unavailable" class="small" hidden>Checkout isn't switched on yet. Please come back soon.</p>
       </div>
     </div>
@@ -137,7 +143,7 @@
       <h2 id="h-faq">Questions</h2>
       <dl class="faq">
         <dt>Do I have to talk to anyone?</dt>
-        <dd>No. There are no calls or meetings. You run the check, pay on Stripe's checkout, and your report appears on screen.</dd>
+        <dd>No. There are no calls or meetings. You run the check, pay on Square's checkout, and your report appears on screen.</dd>
         <dt>How fast is it?</dt>
         <dd>A minute or two. If the checker has been idle, the first check of the hour can take up to a minute to start.</dd>
         <dt>What if my site can't be reached?</dt>

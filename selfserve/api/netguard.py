@@ -24,7 +24,7 @@ runner.py), so patching module globals affects nothing else.
 
 Test hook: SELFSERVE_TEST_ALLOW_LOOPBACK=1 also allows 127.0.0.1/::1 and any
 port, so the end-to-end tests can serve fixture sites locally. server.py refuses
-to start in that mode with a live Stripe key.
+to start in that mode with production Square.
 """
 import ipaddress
 import os

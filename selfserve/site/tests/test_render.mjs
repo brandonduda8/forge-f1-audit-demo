@@ -75,34 +75,42 @@ function test(name, fn) { tests.push([name, fn]); }
 
 const EVIL = "<img src=x onerror=alert(1)>";
 const cfg = C.getConfig({ APEX_CONFIG: {
-  apiBase: "https://api.example.test/", paymentLink: "https://buy.stripe.com/test_abc", price: "$29", supportEmail: "",
+  apiBase: "https://api.example.test/", price: "$29", supportEmail: "",
 } });
 
 test("config is validated and trailing slash stripped", () => {
   assert.equal(cfg.apiBase, "https://api.example.test");
   assert.equal(cfg.payOk, true);
-  const bad = C.getConfig({ APEX_CONFIG: { apiBase: "javascript:alert(1)", paymentLink: "https://evil.test/x" } });
+  const bad = C.getConfig({ APEX_CONFIG: { apiBase: "javascript:alert(1)" } });
   assert.equal(bad.apiOk, false);
   assert.equal(bad.payOk, false);
   assert.equal(C.getConfig({}).apiOk, false);
+  assert.equal(C.getConfig({ APEX_CONFIG: { apiBase: "https://api.example.test", checkout: false } }).payOk, false);
 });
 
-test("session id validation", () => {
-  assert.equal(R.isValidSessionId("cs_test_a1B2c3D4e5F6g7"), true);
-  assert.equal(R.isValidSessionId("cs_live_" + "a".repeat(200)), true);
-  assert.equal(R.isValidSessionId("cs_live_" + "a".repeat(201)), false);
-  assert.equal(R.isValidSessionId("cs_test_short"), false);
-  assert.equal(R.isValidSessionId("cs_test_abc123456789<script>"), false);
-  assert.equal(R.isValidSessionId("pi_test_abcdefghijkl"), false);
-  assert.equal(R.isValidSessionId(""), false);
-  assert.equal(R.isValidSessionId(null), false);
+test("only Square's hosted checkout pages are trusted", () => {
+  for (const ok of ["https://square.link/u/AbC123", "https://sandbox.square.link/u/x", "https://checkout.square.site/merchant/M/checkout/X",
+    "https://connect.squareupsandbox.com/v2/checkout?c=1"]) assert.equal(C.isCheckoutUrl(ok), true, ok);
+  for (const bad of ["http://square.link/u/x", "https://square.link.evil.test/u/x", "https://evilsquare.link/x", "https://square.link:8443/x",
+    "javascript:alert(1)", "https://pay.example.com/x", "", null]) assert.equal(C.isCheckoutUrl(bad), false, String(bad));
+});
+
+test("order id validation", () => {
+  assert.equal(R.isValidOrderId("CAISEHkjZ5kOIDGv5eBhaH8BgfwgAQ"), true);
+  assert.equal(R.isValidOrderId("a".repeat(64)), true);
+  assert.equal(R.isValidOrderId("a".repeat(65)), false);
+  assert.equal(R.isValidOrderId("short"), false);
+  assert.equal(R.isValidOrderId("ORDabc123456789<script>"), false);
+  assert.equal(R.isValidOrderId("../v2/payments"), false);
+  assert.equal(R.isValidOrderId(""), false);
+  assert.equal(R.isValidOrderId(null), false);
 });
 
 test("pdf link only accepts the expected API path", () => {
-  const id = "cs_test_abcdefghijkl";
-  assert.equal(R.pdfHref(cfg, "/api/report.pdf?session_id=" + id, id), "https://api.example.test/api/report.pdf?session_id=" + id);
-  assert.equal(R.pdfHref(cfg, "javascript:alert(1)", id), "https://api.example.test/api/report.pdf?session_id=" + id);
-  assert.equal(R.pdfHref(cfg, "//evil.test/x", id), "https://api.example.test/api/report.pdf?session_id=" + id);
+  const id = "ORDabcdefghijkl";
+  assert.equal(R.pdfHref(cfg, "/api/report.pdf?order_id=" + id, id), "https://api.example.test/api/report.pdf?order_id=" + id);
+  assert.equal(R.pdfHref(cfg, "javascript:alert(1)", id), "https://api.example.test/api/report.pdf?order_id=" + id);
+  assert.equal(R.pdfHref(cfg, "//evil.test/x", id), "https://api.example.test/api/report.pdf?order_id=" + id);
 });
 
 test("report renders hostile API strings as text", () => {
@@ -118,7 +126,7 @@ test("report renders hostile API strings as text", () => {
       not_measured: [{ id: "1.2", label: EVIL, reason: EVIL }],
     },
   };
-  const node = R.renderReport(doc, data, cfg, "cs_test_abcdefghijkl");
+  const node = R.renderReport(doc, data, cfg, "ORDabcdefghijkl");
   const html = serialize(node);
   assertNoInjectedMarkup(node);
   assert.ok(html.includes("&lt;img src=x onerror=alert(1)&gt;"), "hostile string should be escaped text");
@@ -128,13 +136,13 @@ test("report renders hostile API strings as text", () => {
   assert.ok(html.includes('class="grade"') && html.includes(">?</span>"), "bad grade shows ?");
   assert.ok(html.includes("Score: not measured<"), "non-numeric score says not measured");
   assert.ok(html.includes("width:100%"), "category bar is clamped to 100%");
-  assert.ok(html.includes('href="https://api.example.test/api/report.pdf?session_id=cs_test_abcdefghijkl"'));
+  assert.ok(html.includes('href="https://api.example.test/api/report.pdf?order_id=ORDabcdefghijkl"'));
   assert.ok(html.includes("Bookmark this page"));
   assert.ok(html.includes("Top 3 fixes") && html.includes("Not measured (1)") && html.includes("What passed (1)"));
 });
 
 test("report handles a missing report body", () => {
-  const node = R.renderReport(doc, { ok: true, site: "example.com", score: 80, grade: "B" }, cfg, "cs_test_abcdefghijkl");
+  const node = R.renderReport(doc, { ok: true, site: "example.com", score: 80, grade: "B" }, cfg, "ORDabcdefghijkl");
   const html = serialize(node);
   assert.ok(html.includes("No failing checks were found"));
   assert.ok(html.includes('class="grade grade-b"'));
@@ -152,12 +160,12 @@ test("mini-check renders hostile API strings as text", () => {
   assert.ok(!html.includes("4th is dropped"), "only top 3 shown");
   assert.ok(html.includes("+ 6 more issues found so far"));
   assert.ok(html.includes("62/100"));
-  assert.ok(html.includes('href="https://buy.stripe.com/test_abc"'));
-  assert.ok(html.includes("On the checkout page, type the same website address"));
+  assert.ok(html.includes("data-buy-checked"));
+  assert.ok(html.includes("We never see your card details"));
 });
 
-test("mini-check never links to a non-Stripe payment link", () => {
-  const badCfg = C.getConfig({ APEX_CONFIG: { apiBase: "https://api.example.test", paymentLink: "javascript:alert(1)" } });
+test("mini-check without checkout switched on only points at the price section", () => {
+  const badCfg = C.getConfig({ APEX_CONFIG: { apiBase: "https://api.example.test", checkout: false } });
   const node = A.renderMiniResult(doc, { ok: true, site: "example.com", score: 90, grade: "A", top: [], failing: 0 }, badCfg);
   const html = serialize(node);
   assertNoInjectedMarkup(node);
@@ -196,26 +204,55 @@ function mockFetch(routes) {
   };
 }
 const tick = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
-const win = (search) => ({ APEX_CONFIG: { apiBase: "https://api.example.test", paymentLink: "https://buy.stripe.com/test_abc", price: "$29" }, location: { search }, printed: 0, print() { this.printed++; } });
-const SID = "cs_test_abcdefghijkl";
-const REPORT = { ok: true, site: "example.com", score: 62, grade: "C", measured_at: "2026-11-23T10:00:00Z", pdf_url: "/api/report.pdf?session_id=" + SID,
+function store(init) {
+  const m = new Map(Object.entries(init || {}));
+  return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), map: m };
+}
+const win = (search, saved) => ({ APEX_CONFIG: { apiBase: "https://api.example.test", price: "$29" },
+  location: { search, assigned: [], assign(u) { this.assigned.push(u); } },
+  history: { replaced: [], replaceState(_s, _t, u) { this.replaced.push(u); } },
+  localStorage: store(saved), printed: 0, print() { this.printed++; } });
+const SID = "ORDabcdefghijkl";
+const REPORT = { ok: true, site: "example.com", score: 62, grade: "C", measured_at: "2026-11-23T10:00:00Z", pdf_url: "/api/report.pdf?order_id=" + SID,
   report: { categories: [{ name: "Speed", score: 50, weight: 25 }], findings: [{ id: "1.1", severity: "CRITICAL", title: "Slow", measured: "m", why: "w", fix: "f", effort: "e" }], passed: [], not_measured: [] } };
 
-test("report page: bad session id makes no request", async () => {
+test("report page: bad or missing order id makes no request", async () => {
   mockFetch({});
-  const d = page(["report-status", "report-root"]);
-  R.init(d, win("?session_id=cs_test_x"));
+  for (const search of ["?order_id=x", "?order_id=../v2/payments", ""]) {
+    const d = page(["report-status", "report-root"]);
+    R.init(d, win(search));
+    await tick();
+    assert.equal(calls.length, 0);
+    assert.match(d.getElementById("report-status").textContent, /missing its order reference/);
+  }
+});
+
+test("report page: takes Square's orderId, or the order saved before checkout", async () => {
+  mockFetch({ "/api/report?": { status: 200, body: REPORT } });
+  let w = win("?checkoutId=c1&orderId=" + SID + "&transactionId=t1");
+  R.init(page(["report-status", "report-root"]), w);
+  await tick();
+  assert.equal(calls[0].url, "https://api.example.test/api/report?order_id=" + SID);
+  assert.deepEqual(w.history.replaced, ["report.html?order_id=" + SID]);   // a clean link to bookmark
+  mockFetch({ "/api/report?": { status: 200, body: REPORT } });
+  w = win("", { apexLastOrder: SID });
+  R.init(page(["report-status", "report-root"]), w);
+  await tick();
+  assert.equal(calls[0].url, "https://api.example.test/api/report?order_id=" + SID);
+  mockFetch({ "/api/report?": { status: 200, body: REPORT } });
+  w = win("", { apexLastOrder: "<bad>" });
+  R.init(page(["report-status", "report-root"]), w);
   await tick();
   assert.equal(calls.length, 0);
-  assert.match(d.getElementById("report-status").textContent, /missing its payment reference/);
 });
 
 test("report page: 200 renders report, print button works", async () => {
   mockFetch({ "/api/report?": { status: 200, body: REPORT } });
-  const d = page(["report-status", "report-root"]); const w = win("?session_id=" + SID);
+  const d = page(["report-status", "report-root"]); const w = win("?order_id=" + SID);
   R.init(d, w);
   await tick();
-  assert.equal(calls[0].url, "https://api.example.test/api/report?session_id=" + SID);
+  assert.equal(calls[0].url, "https://api.example.test/api/report?order_id=" + SID);
+  assert.deepEqual(w.history.replaced, []);
   assert.equal(d.getElementById("report-status").hidden, true);
   const root = d.getElementById("report-root");
   assert.match(root.textContent, /Website report for example\.com/);
@@ -227,12 +264,12 @@ test("report page: 200 renders report, print button works", async () => {
 test("report page: 402 shows the server's reason, or a payment message", async () => {
   mockFetch({ "/api/report?": { status: 402, body: { ok: false, error: "This payment was refunded, so this report link no longer works." } } });
   let d = page(["report-status", "report-root"]);
-  R.init(d, win("?session_id=" + SID));
+  R.init(d, win("?order_id=" + SID));
   await tick();
   assert.equal(d.getElementById("report-status").textContent, "This payment was refunded, so this report link no longer works.");
   mockFetch({ "/api/report?": { status: 402, body: { ok: false } } });
   d = page(["report-status", "report-root"]);
-  R.init(d, win("?session_id=" + SID));
+  R.init(d, win("?order_id=" + SID));
   await tick();
   assert.equal(d.getElementById("report-status").textContent, "We couldn't find a completed payment for this link.");
 });
@@ -242,12 +279,13 @@ test("find page: lists only same-site report links, as text", async () => {
   const d = page(["find-result"]);
   const list = d.getElementById("find-result");
   const n = F.renderMatches(d, list, { reports: [
-    { site: "<b>roof</b>.com", created: 1700000000, path: "report.html?session_id=" + SID },
-    { site: "evil", created: 1, path: "https://evil.example/report.html?session_id=" + SID },
+    { site: "<b>roof</b>.com", created: 1700000000, path: "report.html?order_id=" + SID },
+    { site: "evil", created: 1, path: "https://evil.example/report.html?order_id=" + SID },
+    { site: "evil3", created: 1, path: "report.html?order_id=" + SID + "&x=<b>" },
     { site: "evil2", created: 1, path: "javascript:alert(1)" }] });
   assert.equal(n, 1);
   const html = serialize(list);
-  assert.ok(html.includes('href="report.html?session_id=' + SID + '"'));
+  assert.ok(html.includes('href="report.html?order_id=' + SID + '"'));
   assert.ok(!html.includes("evil") && !html.includes("javascript:") && !html.includes("<b>"));
 });
 
@@ -255,7 +293,7 @@ test("report page: 422 refundable offers retry and automatic refund", async () =
   mockFetch({ "/api/report?": [{ status: 422, body: { ok: false, error: EVIL, refundable: true } }, { status: 200, body: REPORT }],
     "/api/refund": { status: 200, body: { ok: true, status: "pending" } } });
   const d = page(["report-status", "report-root"]);
-  R.init(d, win("?session_id=" + SID));
+  R.init(d, win("?order_id=" + SID));
   await tick();
   const st = d.getElementById("report-status");
   assert.equal(st.textContent, EVIL); // stored as a text node, never parsed
@@ -266,15 +304,15 @@ test("report page: 422 refundable offers retry and automatic refund", async () =
   await tick();
   const refundCall = calls.find((c) => c.url.endsWith("/api/refund"));
   assert.equal(refundCall.method, "POST");
-  assert.deepEqual(JSON.parse(refundCall.body), { session_id: SID });
-  assert.equal(st.textContent, "Refund issued \u2014 it shows on your card in 5\u201310 days.");
+  assert.deepEqual(JSON.parse(refundCall.body), { order_id: SID });
+  assert.match(st.textContent, /^Refund issued\. Square sends it back/);
 });
 
 test("report page: refund error shows server text and re-enables button", async () => {
   mockFetch({ "/api/report?": { status: 422, body: { ok: false, error: "Site unreachable", refundable: true } },
     "/api/refund": { status: 409, body: { ok: false, error: "Already refunded" } } });
   const d = page(["report-status", "report-root"]);
-  R.init(d, win("?session_id=" + SID));
+  R.init(d, win("?order_id=" + SID));
   await tick();
   const btn = d.getElementById("report-root").querySelectorAll("button")[1];
   btn.click();
@@ -286,21 +324,25 @@ test("report page: refund error shows server text and re-enables button", async 
 test("report page: network failure offers Try again", async () => {
   mockFetch({ "/api/report?": "network" });
   const d = page(["report-status", "report-root"]);
-  R.init(d, win("?session_id=" + SID));
+  R.init(d, win("?order_id=" + SID));
   await tick();
   assert.match(d.getElementById("report-status").textContent, /couldn't reach the checker/);
   assert.equal(d.getElementById("report-root").querySelector("button").textContent, "Try again");
 });
 
-test("index: wakes server, wires Buy buttons, runs the free check", async () => {
-  mockFetch({ "/health": { status: 200, body: { ok: true } }, "/api/check": { status: 200,
+const CHECKOUT = { status: 200, body: { ok: true, checkout_url: "https://sandbox.square.link/u/AbC123", order_id: SID } };
+
+test("index: wakes server, enables Buy, runs the free check, buys the checked site", async () => {
+  // "/api/checkout" first: the mock matches by substring, and "/api/check" is inside it
+  mockFetch({ "/health": { status: 200, body: { ok: true } }, "/api/checkout": CHECKOUT, "/api/check": { status: 200,
     body: { ok: true, site: "example.com", score: 62, grade: "C", top: [{ severity: "CRITICAL", title: "Slow" }], failing: 9, passed: 12, not_measured: 17 } } });
-  const buy = new FakeElement("a"); buy.setAttribute("data-buy", ""); buy.setAttribute("href", "#price");
   const price = new FakeElement("p"); price.setAttribute("data-price", "");
-  const d = page(["check-form", "site-url", "check-btn", "check-status", "check-result", "pay-unavailable"], [buy, price]);
-  A.init(d, win(""));
+  const d = page(["check-form", "site-url", "check-btn", "check-status", "check-result", "pay-unavailable", "buy-form", "buy-url", "buy-btn", "buy-status"], [price]);
+  d.getElementById("buy-btn").disabled = true;
+  const w = win("");
+  A.init(d, w);
   assert.equal(calls[0].url, "https://api.example.test/health");
-  assert.equal(buy.getAttribute("href"), "https://buy.stripe.com/test_abc");
+  assert.equal(d.getElementById("buy-btn").disabled, false);
   assert.equal(price.textContent, "$29");
   d.getElementById("site-url").value = "  example.com ";
   d.getElementById("check-form").submit();
@@ -312,6 +354,40 @@ test("index: wakes server, wires Buy buttons, runs the free check", async () => 
   assert.equal(res.hidden, false);
   assert.match(res.textContent, /\+ 8 more issues found so far/);
   assert.equal(d.getElementById("check-btn").disabled, false);
+  assert.equal(d.getElementById("buy-url").value, "example.com");        // the price box is filled in for them
+  res.querySelector("[data-buy-checked]").click();
+  await tick();
+  const co = calls.find((c) => c.url.endsWith("/api/checkout"));
+  assert.deepEqual(JSON.parse(co.body), { url: "example.com" });
+  assert.deepEqual(w.location.assigned, ["https://sandbox.square.link/u/AbC123"]);
+  assert.equal(w.localStorage.map.get("apexLastOrder"), SID);
+});
+
+test("index: price-box Buy needs a website and refuses a checkout URL that isn't Square's", async () => {
+  mockFetch({ "/health": { status: 200, body: {} },
+    "/api/checkout": [{ status: 200, body: { ok: true, checkout_url: "https://evil.example/pay", order_id: SID } },
+                      { status: 503, body: { ok: false, error: EVIL } }, CHECKOUT] });
+  const d = page(["check-form", "site-url", "check-btn", "check-status", "check-result", "buy-form", "buy-url", "buy-btn", "buy-status"]);
+  const w = win("");
+  A.init(d, w);
+  const form = d.getElementById("buy-form"), st = d.getElementById("buy-status"), btn = d.getElementById("buy-btn");
+  form.submit();
+  await tick();
+  assert.match(st.textContent, /Type your website address first/);
+  assert.equal(calls.filter((c) => c.url.endsWith("/api/checkout")).length, 0);
+  d.getElementById("buy-url").value = "roof.example";
+  form.submit();
+  await tick();
+  assert.match(st.textContent, /looked wrong/);
+  assert.deepEqual(w.location.assigned, []);
+  assert.equal(w.localStorage.map.size, 0);
+  form.submit();
+  await tick();
+  assert.equal(st.textContent, EVIL);
+  assert.equal(btn.disabled, false);
+  form.submit();
+  await tick();
+  assert.deepEqual(w.location.assigned, ["https://sandbox.square.link/u/AbC123"]);
 });
 
 test("index: 429 error shown as text; network failure friendly", async () => {

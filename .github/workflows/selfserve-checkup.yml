@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt pytest
-      - name: Unit and end-to-end tests (local fixtures, fake Stripe)
+      - name: Unit and end-to-end tests (local fixtures, fake Square)
         run: python -m pytest -q -p no:cacheprovider selfserve/api/tests
       - name: Site tests
         run: |

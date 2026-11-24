@@ -15,8 +15,54 @@
     return /^https:\/\/[A-Za-z0-9.-]+(:\d+)?(\/[^\s"'<>\\`]*)?$/.test(value);
   }
 
-  function isPaymentLink(value) {
-    return isHttpsUrl(value) && /^https:\/\/buy\.stripe\.com\/[^\s]+$/.test(value);
+  /* Square's hosted checkout. Card details are typed there, never on our pages or server. */
+  var CHECKOUT_HOSTS = ["square.link", "checkout.square.site", "squareup.com", "squareupsandbox.com"];
+  var ORDER_RE = /^[A-Za-z0-9_-]{10,64}$/;
+  var LAST_ORDER_KEY = "apexLastOrder";
+
+  function isCheckoutUrl(value) {
+    if (!isHttpsUrl(value)) return false;
+    var m = /^https:\/\/([A-Za-z0-9.-]+)(:\d+)?(\/|$)/.exec(value);
+    if (!m || m[2]) return false;
+    var host = m[1].toLowerCase();
+    return CHECKOUT_HOSTS.some(function (h) { return host === h || host.slice(-(h.length + 1)) === "." + h; });
+  }
+
+  function isOrderId(value) {
+    return typeof value === "string" && ORDER_RE.test(value);
+  }
+
+  function rememberOrder(win, id) {
+    try { if (isOrderId(id)) win.localStorage.setItem(LAST_ORDER_KEY, id); } catch (e) { /* private mode */ }
+  }
+
+  function lastOrder(win) {
+    try { var v = win.localStorage.getItem(LAST_ORDER_KEY); return isOrderId(v) ? v : ""; } catch (e) { return ""; }
+  }
+
+  /* Ask the API for a Square checkout for this website, then go there.
+     Resolves {ok: true} after navigating, or {ok: false, message}. */
+  function startCheckout(win, cfg, website) {
+    var value = String(website || "").trim();
+    if (!value) return Promise.resolve({ ok: false, message: "Type your website address first, for example yourbusiness.com" });
+    if (value.length > 300) return Promise.resolve({ ok: false, message: "That address is too long. Use just your homepage." });
+    if (!cfg.payOk) return Promise.resolve({ ok: false, message: "Checkout isn't switched on yet. Please come back soon." });
+    return fetchJson(cfg.apiBase + "/api/checkout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: value })
+    }, 90000, null).then(function (r) {
+      var d = r.data || {};
+      if (r.status === 200 && d.ok === true && isCheckoutUrl(d.checkout_url) && isOrderId(d.order_id)) {
+        rememberOrder(win, d.order_id);
+        win.location.assign(d.checkout_url);
+        return { ok: true };
+      }
+      if (r.status === 200) return { ok: false, message: "The checkout link looked wrong, so we stopped. Please try again." };
+      return { ok: false, message: errorText(d, "We couldn't open the checkout (code " + r.status + "). Please try again.") };
+    }, function () {
+      return { ok: false, message: NETWORK_MESSAGE };
+    });
   }
 
   /* Read and validate window.APEX_CONFIG. Never throws. */
@@ -25,13 +71,13 @@
     var apiBase = typeof raw.apiBase === "string" ? raw.apiBase.replace(/\/+$/, "") : "";
     var cfg = {
       apiBase: isHttpsUrl(apiBase) ? apiBase : "",
-      paymentLink: isPaymentLink(raw.paymentLink) ? raw.paymentLink : "",
+      checkout: raw.checkout !== false,
       price: typeof raw.price === "string" && raw.price.length <= 20 ? raw.price : "$29",
       supportEmail: typeof raw.supportEmail === "string" &&
         /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/.test(raw.supportEmail) ? raw.supportEmail : ""
     };
     cfg.apiOk = cfg.apiBase !== "";
-    cfg.payOk = cfg.paymentLink !== "";
+    cfg.payOk = cfg.apiOk && cfg.checkout;
     return cfg;
   }
 
@@ -149,7 +195,11 @@
     WAKE_MESSAGE: WAKE_MESSAGE,
     NETWORK_MESSAGE: NETWORK_MESSAGE,
     isHttpsUrl: isHttpsUrl,
-    isPaymentLink: isPaymentLink,
+    isCheckoutUrl: isCheckoutUrl,
+    isOrderId: isOrderId,
+    rememberOrder: rememberOrder,
+    lastOrder: lastOrder,
+    startCheckout: startCheckout,
     getConfig: getConfig,
     el: el,
     clear: clear,

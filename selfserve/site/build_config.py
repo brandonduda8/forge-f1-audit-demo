@@ -3,7 +3,8 @@
 
 Reads these environment variables:
   APEX_API_BASE       required  https URL of the checker API (no trailing slash needed)
-  APEX_PAYMENT_LINK   required  Stripe Payment Link, must be https://buy.stripe.com/...
+  APEX_CHECKOUT       optional  "off" hides buying (default on). Buyers pay on Square's hosted
+                                checkout, which the API creates per order; no link is configured here.
   APEX_PRICE          optional  price label shown on the page (default "$29")
   APEX_SUPPORT_EMAIL  required  address for refund and privacy requests, shown on the legal
                                 pages (a buyer must always have a way to reach the seller)
@@ -26,7 +27,7 @@ DEFAULT_OUT = os.path.join(HERE, "config.js")
 
 EXAMPLE = {
     "apiBase": "https://your-checker-api.example.invalid",
-    "paymentLink": "https://buy.stripe.com/test_REPLACE_ME",
+    "checkout": True,
     "price": "$29",
     "supportEmail": "support@example.invalid",
 }
@@ -64,9 +65,9 @@ def build(env):
         raise ConfigError("APEX_API_BASE must not contain a query string or fragment.")
     api = api.rstrip("/")
 
-    pay = _check_https("APEX_PAYMENT_LINK", env.get("APEX_PAYMENT_LINK"), "buy.stripe.com")
-    if urlsplit(pay).path in ("", "/"):
-        raise ConfigError("APEX_PAYMENT_LINK must include the Payment Link path, e.g. https://buy.stripe.com/abc123.")
+    flag = (env.get("APEX_CHECKOUT") or "on").strip().lower()
+    if flag not in ("on", "off"):
+        raise ConfigError('APEX_CHECKOUT must be "on" or "off".')
 
     price = (env.get("APEX_PRICE") or "$29").strip()
     if len(price) > 20 or any(c in price for c in "<>\"'`\\"):
@@ -78,7 +79,7 @@ def build(env):
     if not EMAIL_RE.match(email):
         raise ConfigError("APEX_SUPPORT_EMAIL does not look like an email address.")
 
-    return {"apiBase": api, "paymentLink": pay, "price": price, "supportEmail": email}
+    return {"apiBase": api, "checkout": flag == "on", "price": price, "supportEmail": email}
 
 
 def render(cfg):

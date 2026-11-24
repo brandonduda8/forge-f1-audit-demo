@@ -5,16 +5,24 @@
 
   var C = (typeof module !== "undefined" && module.exports) ? require("./common.js") : window.ApexCommon;
 
-  var SESSION_RE = /^cs_(test|live)_[A-Za-z0-9]{10,200}$/;
-  var PDF_PATH_RE = /^\/api\/report\.pdf\?session_id=[A-Za-z0-9_]{1,220}$/;
+  var PDF_PATH_RE = /^\/api\/report\.pdf\?order_id=[A-Za-z0-9_-]{10,64}$/;
 
-  function isValidSessionId(id) {
-    return typeof id === "string" && SESSION_RE.test(id);
+  function isValidOrderId(id) {
+    return C.isOrderId(id);
   }
 
-  function pdfHref(cfg, pdfUrl, sessionId) {
+  function pdfHref(cfg, pdfUrl, orderId) {
     if (typeof pdfUrl === "string" && PDF_PATH_RE.test(pdfUrl)) return cfg.apiBase + pdfUrl;
-    return cfg.apiBase + "/api/report.pdf?session_id=" + encodeURIComponent(sessionId);
+    return cfg.apiBase + "/api/report.pdf?order_id=" + encodeURIComponent(orderId);
+  }
+
+  /* The order this page is for: Square's own redirect parameter, our link's, or the one
+     this browser saved before going to checkout (Square's test mode may not add it). */
+  function orderIdFrom(win) {
+    var params = new URLSearchParams(win.location.search);
+    var fromUrl = params.get("order_id") || params.get("orderId") || "";
+    if (fromUrl) return { id: fromUrl, fromUrl: true };
+    return { id: C.lastOrder(win), fromUrl: false };
   }
 
   function section(doc, title, id) {
@@ -46,7 +54,7 @@
   }
 
   /* Pure: build the full report node from a 200 response. */
-  function renderReport(doc, data, cfg, sessionId) {
+  function renderReport(doc, data, cfg, orderId) {
     var el = C.el;
     var rep = (data && data.report) || {};
     var site = C.str(data.site, 200) || "your website";
@@ -73,7 +81,7 @@
     ]));
     head.appendChild(el(doc, "p", { className: "notice no-print", text: "Bookmark this page — your report link works for 30 days. Lost it? Use Find my report at the bottom of any page." }));
     head.appendChild(el(doc, "div", { className: "btn-row no-print" }, [
-      el(doc, "a", { className: "btn", href: pdfHref(cfg, data.pdf_url, sessionId), text: "Download PDF", attrs: { rel: "noopener" } }),
+      el(doc, "a", { className: "btn", href: pdfHref(cfg, data.pdf_url, orderId), text: "Download PDF", attrs: { rel: "noopener" } }),
       el(doc, "button", { className: "btn btn-secondary", text: "Print", attrs: { type: "button", "data-action": "print" } })
     ]));
     root.appendChild(head);
@@ -184,8 +192,8 @@
     var status = doc.getElementById("report-status");
     if (!out || !status) return;
 
-    var params = new URLSearchParams(win.location.search);
-    var sessionId = params.get("session_id") || "";
+    var found = orderIdFrom(win);
+    var orderId = found.id;
 
     function showStatus(text, isError, spinning) {
       C.clear(status);
@@ -208,10 +216,17 @@
       return b;
     }
 
-    if (!isValidSessionId(sessionId)) {
-      showStatus("This link is missing its payment reference. Use the link from your Stripe checkout page or receipt.", true, false);
+    if (!isValidOrderId(orderId)) {
+      showStatus("This link is missing its order reference. If you've paid, use Find my report with the email you paid with.", true, false);
       return;
     }
+    // Keep a link that can be bookmarked: report.html?order_id=...
+    try {
+      var params = new URLSearchParams(win.location.search);
+      if (params.get("order_id") !== orderId && win.history && win.history.replaceState) {
+        win.history.replaceState(null, "", "report.html?order_id=" + encodeURIComponent(orderId));
+      }
+    } catch (e) { /* ignore */ }
     if (!cfg.apiOk) {
       showStatus("The report service isn't configured yet. Please try again later.", true, false);
       return;
@@ -223,11 +238,11 @@
       C.fetchJson(cfg.apiBase + "/api/refund", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId })
+        body: JSON.stringify({ order_id: orderId })
       }, 60000, null)
         .then(function (r) {
           if (r.status === 200 && r.data && r.data.ok === true) {
-            showStatus("Refund issued — it shows on your card in 5–10 days.", false, false);
+            showStatus("Refund issued. Square sends it back to the card or Cash App account you paid with; it can take a few business days to show.", false, false);
             C.clear(out);
           } else {
             showStatus(C.errorText(r.data, "The refund didn't go through (code " + r.status + ")."), true, false);
@@ -242,14 +257,14 @@
     function load() {
       C.clear(out);
       showStatus("Loading your report… if it's still being built this can take a minute or two.", false, true);
-      C.fetchJson(cfg.apiBase + "/api/report?session_id=" + encodeURIComponent(sessionId), { method: "GET" },
+      C.fetchJson(cfg.apiBase + "/api/report?order_id=" + encodeURIComponent(orderId), { method: "GET" },
         200000, function () { showStatus(C.WAKE_MESSAGE, false, true); }, 8000)
         .then(function (r) {
           var d = r.data || {};
           if (r.status === 200 && d.ok === true) {
             status.hidden = true;
             C.clear(out);
-            out.appendChild(renderReport(doc, d, cfg, sessionId));
+            out.appendChild(renderReport(doc, d, cfg, orderId));
             Array.prototype.forEach.call(out.querySelectorAll('[data-action="print"]'), function (b) {
               b.addEventListener("click", function () { win.print(); });
             });
@@ -283,7 +298,7 @@
   }
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { isValidSessionId: isValidSessionId, renderReport: renderReport, pdfHref: pdfHref, findingCard: findingCard, init: init };
+    module.exports = { isValidOrderId: isValidOrderId, orderIdFrom: orderIdFrom, renderReport: renderReport, pdfHref: pdfHref, findingCard: findingCard, init: init };
   } else {
     init(document, window);
   }

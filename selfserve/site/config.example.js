@@ -3,7 +3,7 @@
 // Running `python3 build_config.py --example` writes these placeholders to config.js.
 window.APEX_CONFIG = {
   "apiBase": "https://your-checker-api.example.invalid",
-  "paymentLink": "https://buy.stripe.com/test_REPLACE_ME",
+  "checkout": true,
   "price": "$29",
   "supportEmail": ""
 };

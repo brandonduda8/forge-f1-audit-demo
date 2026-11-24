@@ -3,7 +3,7 @@
 #
 # Two free services:
 #   apex-checkup       static site (the landing page, free check, report page). Free static sites do not sleep.
-#   apex-checkup-api   Python web service (runs the checks, verifies Stripe payments). Free plan:
+#   apex-checkup-api   Python web service (runs the checks, makes Square checkouts, verifies payments). Free plan:
 #                      512 MB, sleeps after 15 min idle, ~1 min to wake. The page wakes it on load.
 # Secrets are never in this file: every value marked sync: false is typed into the Render dashboard.
 #
@@ -25,10 +25,18 @@ services:
         value: "1"
       - key: SITE_ORIGIN            # https address of the static site, e.g. https://apex-checkup.onrender.com
         sync: false
-      - key: STRIPE_SECRET_KEY      # restricted key rk_live_... (Checkout Sessions: Read, Refunds: Write)
+      - key: SQUARE_ENV             # sandbox while testing, production to go live
+        value: sandbox
+      - key: SQUARE_ACCESS_TOKEN    # from the Square Developer Console (sandbox token first)
         sync: false
-      - key: STRIPE_PAYMENT_LINK_ID # plink_... of the $29 payment link
+      - key: SQUARE_LOCATION_ID     # the location that takes the payments
         sync: false
+      - key: SQUARE_WEBHOOK_URL     # exactly the notification URL typed into Square, e.g. https://apex-checkup-api.onrender.com/api/square/webhook
+        sync: false
+      - key: SQUARE_WEBHOOK_SIGNATURE_KEY  # shown by Square on the webhook subscription
+        sync: false
+      - key: CHECKUP_PRICE_CENTS    # 2900 = $29.00 (100 for a one-dollar live test)
+        value: "2900"
 
   - type: web
     name: apex-checkup
@@ -50,8 +58,8 @@ services:
     envVars:
       - key: APEX_API_BASE          # https address of apex-checkup-api, e.g. https://apex-checkup-api.onrender.com
         sync: false
-      - key: APEX_PAYMENT_LINK      # https://buy.stripe.com/... from the Stripe dashboard
-        sync: false
+      - key: APEX_CHECKOUT          # "off" hides buying while you test the free check
+        value: "on"
       - key: APEX_PRICE
         value: $29
       - key: APEX_SUPPORT_EMAIL     # required: where refund and privacy requests go (shown on privacy and terms pages)
