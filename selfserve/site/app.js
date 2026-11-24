@@ -47,6 +47,27 @@
       }));
     }
 
+    // Top problem in each separate section (accessibility; security and email trust)
+    var secs = (Array.isArray(data.sections) ? data.sections : []).filter(function (x) { return x && typeof x === "object"; }).slice(0, 4);
+    if (secs.length) {
+      var sl = el(doc, "ul", { className: "issues sections" });
+      secs.forEach(function (sec) {
+        var name = C.str(sec.name, 60);
+        var t = sec.top && typeof sec.top === "object" ? sec.top : null;
+        var n = C.num(sec.failing);
+        var extra = (n !== null && n > 1) ? " (+" + Math.round(n - 1) + " more in the full report)" : "";
+        sl.appendChild(el(doc, "li", {}, t ? [
+          el(doc, "strong", { text: name + ": " }),
+          C.severityBadge(doc, t.severity),
+          el(doc, "span", { text: C.str(t.title, 300) + extra })
+        ] : [
+          el(doc, "strong", { text: name + ": " }),
+          el(doc, "span", { text: C.num(sec.score) === null ? "checked in the full report" : "nothing below the bar in the free check" })
+        ]));
+      });
+      wrap.appendChild(sl);
+    }
+
     var counts = [];
     if (passed !== null) counts.push(Math.round(passed) + " checks passed");
     if (notMeasured !== null) counts.push(Math.round(notMeasured) + " not measured (they need a full browser)");

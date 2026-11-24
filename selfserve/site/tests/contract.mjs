@@ -20,6 +20,11 @@ const mt = m.textContent;
 assert.ok(mt.includes(mini.grade), "mini result shows the grade");
 assert.ok(mt.includes(String(mini.score)), "mini result shows the score");
 for (const t of mini.top) assert.ok(mt.includes(t.title), "mini result shows top issue: " + t.title);
+assert.ok(Array.isArray(mini.sections) && mini.sections.length === 2, "free check has the two separate sections");
+for (const s of mini.sections) {
+  assert.ok(mt.includes(s.name + ": "), "mini result shows section " + s.name);
+  if (s.top) assert.ok(mt.includes(s.top.title), "mini result shows the section's top issue: " + s.top.title);
+}
 
 const r = R.renderReport(doc, rep, cfg, rep.pdf_url.split("order_id=")[1]);
 const rt = r.textContent;
@@ -28,6 +33,12 @@ assert.ok(rt.includes(rep.grade) && rt.includes(String(rep.score)), "report show
 for (const c of rep.report.categories) assert.ok(rt.includes(c.name), "category " + c.name);
 for (const f of rep.report.findings) {
   for (const k of ["title", "measured", "fix", "effort"]) assert.ok(rt.includes(f[k]), `finding ${f.id} ${k} shown`);
+}
+for (const s of rep.report.sections) {
+  assert.ok(rt.includes(s.name), "section " + s.name);
+  for (const f of s.findings) {
+    for (const k of ["title", "measured", "fix", "effort"]) assert.ok(rt.includes(f[k]), `section finding ${f.id} ${k} shown`);
+  }
 }
 for (const p of rep.report.passed) assert.ok(rt.includes(p.title), "passed " + p.id);
 for (const n of rep.report.not_measured) assert.ok(rt.includes(n.label), "not measured " + n.id);

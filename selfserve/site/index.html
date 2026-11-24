@@ -28,7 +28,7 @@
   <section class="hero" aria-labelledby="h-hero">
     <div class="wrap">
       <h1 id="h-hero">Find what's costing your website calls — in 60 seconds</h1>
-      <p class="lede">Type your website below. A free automated check looks at your live site and shows your grade and the top 3 issues. No account, no sign-up, nobody will call you.</p>
+      <p class="lede">Type your website below. A free automated check looks at your live site and shows your grade, the top 3 issues, and the top accessibility and security issues. No account, no sign-up, nobody will call you.</p>
 
       <form id="check-form" class="check-form" novalidate>
         <div id="free-check">
@@ -49,7 +49,7 @@
   <section aria-labelledby="h-includes">
     <div class="wrap">
       <h2 id="h-includes">What the $29 report includes</h2>
-      <p>About 25 automated checks of your live website, grouped into six areas:</p>
+      <p>Over 35 automated checks of your live website: six graded areas, plus accessibility and security scored on their own:</p>
       <div class="cols">
         <div class="box">
           <h3>What gets checked</h3>
@@ -60,6 +60,8 @@
             <li><strong>Contact path</strong> — phone number up top, contact forms, how many clicks to reach you, hours and service area.</li>
             <li><strong>Reviews</strong> — whether your site shows customer reviews or testimonials.</li>
             <li><strong>Trust signals</strong> — about info, license and insurance mentions, image descriptions, social links, guarantees, broken links.</li>
+            <li><strong>Accessibility</strong> — basic WCAG checks: image alt text, form labels, heading order, page language, and text contrast where the colours can be read from the page.</li>
+            <li><strong>Security and email trust</strong> — security headers, certificate expiry, whether private files like .env are public, and the SPF, DMARC and DKIM records that stop others sending email as you.</li>
           </ul>
         </div>
         <div class="box">
@@ -86,7 +88,7 @@
         <li>Your Google Business Profile, your star ratings on Google, Yelp or other sites, and your search rankings.</li>
         <li>Your traffic, ads, or how many calls and leads you actually get.</li>
         <li>Whether your contact form really delivers messages (we never submit your forms).</li>
-        <li>A full accessibility audit or a security test.</li>
+        <li>A full accessibility audit (screen-reader testing, colours set in stylesheets) or a penetration test. The accessibility and security checks are a basic automated scan.</li>
       </ul>
       <p class="muted">The checker reads your homepage and a small number of linked pages. It is not a full-site crawl.</p>
     </div>
@@ -151,7 +153,7 @@
         <dt>Is this a subscription?</dt>
         <dd>No. You pay once for one report.</dd>
         <dt>Do you change my site?</dt>
-        <dd>No. The checker is read-only. It makes a few polite requests to your site, the same way a visitor's browser would, and never logs in or submits forms.</dd>
+        <dd>No. The checker is read-only. It makes a few polite requests to your site, the same way a visitor's browser would, and never logs in or submits forms. To see whether private files like .env are public, it asks for each one once without downloading it, and it reads your domain's public email records (DNS).</dd>
         <dt>Can I check someone else's site?</dt>
         <dd>Only check websites you own or are allowed to check.</dd>
         <dt>Is this professional advice?</dt>

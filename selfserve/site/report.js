@@ -60,6 +60,7 @@
     var site = C.str(data.site, 200) || "your website";
     var categories = Array.isArray(rep.categories) ? rep.categories : [];
     var findings = Array.isArray(rep.findings) ? rep.findings : [];
+    var sections = (Array.isArray(rep.sections) ? rep.sections : []).filter(function (x) { return x && typeof x === "object"; });
     var passed = Array.isArray(rep.passed) ? rep.passed : [];
     var notMeasured = Array.isArray(rep.not_measured) ? rep.not_measured : [];
     var when = C.formatDate(data.measured_at);
@@ -86,7 +87,8 @@
     ]));
     root.appendChild(head);
 
-    // Categories
+    // Categories, then the separate sections (scored, but not part of the grade)
+    categories = categories.concat(sections.map(function (x) { return { name: x.name, score: x.score, ungraded: true }; }));
     if (categories.length) {
       var cs = section(doc, "Scores by category", "h-cats");
       var table = el(doc, "table");
@@ -109,7 +111,7 @@
           el(doc, "th", { text: C.str(c.name, 60), attrs: { scope: "row" } }),
           el(doc, "td", { className: "num", text: s === null ? "not measured" : C.scoreText(c.score) + "/100" }),
           el(doc, "td", {}, [bar]),
-          el(doc, "td", { className: "num", text: w === null ? "" : Math.round(w) + "%" })
+          el(doc, "td", { className: "num", text: c.ungraded ? "not in grade" : (w === null ? "" : Math.round(w) + "%") })
         ]));
       });
       table.appendChild(tbody);
@@ -143,6 +145,23 @@
       findings.forEach(function (f) { fs.appendChild(findingCard(doc, f)); });
       root.appendChild(fs);
     }
+
+    // Separate sections: accessibility; security and email trust
+    sections.forEach(function (sec, i) {
+      var list = Array.isArray(sec.findings) ? sec.findings : [];
+      var sn = C.str(sec.name, 60) || "More checks";
+      var sc = C.num(sec.score);
+      var ss = section(doc, sn + (sc === null ? "" : " (" + C.scoreText(sec.score) + "/100)"), "h-sec-" + i);
+      ss.appendChild(el(doc, "p", { className: "muted small", text: "Scored on its own; not part of the grade above." }));
+      if (list.length) {
+        list.forEach(function (f) { ss.appendChild(findingCard(doc, f)); });
+      } else {
+        ss.appendChild(el(doc, "p", { text: sc === null
+          ? "Nothing in this section could be measured this time; see Not measured below."
+          : "Nothing below the bar in what we could measure." }));
+      }
+      root.appendChild(ss);
+    });
 
     // Passed
     var ps = section(doc, "What passed (" + passed.length + ")", "h-pass");

@@ -76,6 +76,32 @@ FIXES = {
          "State the guarantee or warranty explicitly (only what is true)."),
  "6.6": ("MAJOR", "Broken links found", "DIY or needs a developer, ~1 hour",
          "Fix or remove every broken internal link found."),
+ # 7.x accessibility (basic WCAG checks on the homepage HTML)
+ "7.1": ("MAJOR", "Images missing alt text", "DIY in most site builders, ~30 minutes",
+         "Give every meaningful image a short alt description in the image settings; mark purely decorative images with an empty alt."),
+ "7.2": ("MAJOR", "Form fields without labels", "DIY or needs a developer, ~30 minutes",
+         "Give every form field a visible label tied to it (most form builders have a label setting); placeholder text alone is not a label."),
+ "7.3": ("MINOR", "Headings skip levels", "DIY, ~20 minutes",
+         "Use headings in order (H1, then H2, then H3) so no level is skipped; change the heading level, not just the font size."),
+ "7.4": ("MINOR", "Page language not declared", "Needs a developer or a site setting, ~5 minutes",
+         "Set the site language (for example lang=\"en\" on the html tag; most builders have a language setting)."),
+ "7.5": ("MAJOR", "Low-contrast text", "DIY, ~30 minutes",
+         "Darken the text or lighten the background until the contrast ratio is at least 4.5 to 1 (3 to 1 for large headings)."),
+ # 8.x security and email trust
+ "8.1": ("MINOR", "HTTPS not enforced with HSTS", "Needs a developer or your host, ~15 minutes",
+         "Send a Strict-Transport-Security header (max-age of at least 6 months) so browsers always use HTTPS."),
+ "8.2": ("MINOR", "Missing security headers", "Needs a developer or your host, ~30 minutes",
+         "Add the missing headers listed above (most hosts and CDNs have a setting or plugin for them); test the site after adding a Content-Security-Policy."),
+ "8.3": ("MAJOR", "Certificate is close to expiring and hasn't renewed", "Needs your host, ~15 minutes",
+         "Check that automatic renewal is working with your host and renew the certificate now if it isn't."),
+ "8.4": ("CRITICAL", "Private files may be public", "Needs a developer today, ~30 minutes",
+         "Open the addresses listed above in a browser to confirm. If the file opens, block web access to it (or delete it from the web server), then change any passwords or keys it holds."),
+ "8.5": ("MAJOR", "No SPF email record", "DIY at your domain registrar, ~15 minutes",
+         "Add an SPF TXT record listing the services that send your email (your email provider gives the exact text); end it with ~all or -all."),
+ "8.6": ("MAJOR", "No DMARC email record", "DIY at your domain registrar, ~15 minutes",
+         "Add a TXT record at _dmarc with at least v=DMARC1; p=none and a reporting address, then move to p=quarantine once mail checks out."),
+ "8.7": ("MINOR", "DKIM signing not found", "DIY with your email provider, ~15 minutes",
+         "Turn on DKIM signing in your email provider and publish the record it gives you."),
 }
 
 CATEGORIES = [
@@ -86,6 +112,18 @@ CATEGORIES = [
     ("Reviews", 10, ["5.2"]),
     ("Trust signals", 10, ["6.1", "6.2", "6.3", "6.4", "6.5", "6.6"]),
 ]
+
+# Shown with their own score next to the grade. Not part of the 0-100 grade, so
+# grades stay comparable with earlier checkups.
+SECTIONS = [
+    ("Accessibility", ["7.1", "7.2", "7.3", "7.4", "7.5"]),
+    ("Security and email trust", ["8.1", "8.2", "8.3", "8.4", "8.5", "8.6", "8.7"]),
+]
+SECTION_LINES = {
+    "Accessibility": "Can people using screen readers, keyboards or weaker eyesight use the site?",
+    "Security and email trust": "Is the site locked down, and can others send email pretending to be you?",
+}
+SECTION_IDS = {cid for _n, ids in SECTIONS for cid in ids}
 
 NOT_MEASURED = [
     ("1.2", "Largest Contentful Paint (LCP)", "needs a browser render (pinned: Lighthouse CLI)"),
@@ -140,6 +178,18 @@ def fix_for(cid, sc):
     if cid == "3.7" and sc == 0:
         return ("MAJOR", "Site not served over HTTPS", "Needs a developer or your host, ~1 hour",
                 "Turn on HTTPS (most hosts include a free certificate) and redirect every http:// address to https://.")
+    if cid == "7.3" and sc == 0:
+        return ("MINOR", "No headings on the homepage", "DIY, ~20 minutes",
+                "Mark the page's main title as H1 and each section title as H2, using the heading setting rather than bold text.")
+    if cid == "8.3" and sc == 0:
+        return ("CRITICAL", "Certificate expires within 7 days and hasn't renewed", "Needs your host, today",
+                "Renew the certificate now and turn on automatic renewal with your host; once it lapses, browsers block the site.")
+    if cid == "8.5" and sc == 0.5:
+        return ("MAJOR", "SPF email record is too loose or broken", "DIY at your domain registrar, ~15 minutes",
+                "Keep exactly one SPF record, list only the services that send your email, and end it with ~all or -all (never +all).")
+    if cid == "8.6" and sc == 0.5:
+        return ("MINOR", "DMARC is set to monitor only", "DIY at your domain registrar, ~10 minutes",
+                "Once your reports show your real mail passing, change p=none to p=quarantine so look-alike mail gets filtered.")
     return FIXES[cid]
 
 
@@ -268,6 +318,74 @@ def score(ev):
             put(cid, 1 if v else 0, f"social profiles linked: {', '.join(v.keys())}" if v else "no social profile links found")
         elif cid == "6.5":
             put(cid, 1 if v else 0, "guarantee/warranty language " + ("present" if v else "not found"))
+        elif cid == "7.1":
+            n, miss = v["n_images"], v["missing_alt"]
+            put(cid, 1 if miss == 0 else (0.5 if miss <= 0.2 * n else 0), f"{miss} of {n} images lack alt text")
+        elif cid == "7.2":
+            n, un = v["n_fields"], v["unlabeled"]
+            ex = f" (e.g. {', '.join(v['examples'])})" if un and v.get("examples") else ""
+            put(cid, 1 if un == 0 else (0.5 if un * 2 <= n else 0), f"{un} of {n} form fields lack a label{ex}")
+        elif cid == "7.3":
+            if not v["n_headings"]:
+                put(cid, 0, "no headings on the homepage")
+            elif v["n_skips"]:
+                put(cid, 0.5, f"{v['n_headings']} headings; level skipped {v['n_skips']} time(s), e.g. {v['skips'][0]}")
+            else:
+                put(cid, 1, f"{v['n_headings']} headings, no skipped levels")
+        elif cid == "7.4":
+            put(cid, 1 if v["valid"] else 0, f'page language "{v["lang"]}"' if v["valid"] else
+                ("no page language declared" if not v["lang"] else f'page language "{v["lang"]}" is not a valid code'))
+        elif cid == "7.5":
+            n, b3, b45 = v["n_pairs"], v["below_3"], v["below_4_5"]
+            worst = f"; lowest {v['examples'][0]['ratio']}:1" if v.get("examples") else ""
+            put(cid, 0 if b3 else (0.5 if b45 else 1),
+                f"{n} text/background pair(s) set inline; {b45} below the WCAG minimum for their size{worst} (colours from stylesheets not checked)")
+        elif cid == "8.1":
+            if not v["present"]:
+                put(cid, 0, "no Strict-Transport-Security header")
+            elif not v["max_age"]:
+                put(cid, 0, "Strict-Transport-Security max-age is 0 or missing, which switches it off")
+            elif (v["max_age"] or 0) < 15552000:
+                put(cid, 0.5, f"Strict-Transport-Security max-age {v['max_age']} (under 6 months)")
+            else:
+                put(cid, 1, f"Strict-Transport-Security max-age {v['max_age']}")
+        elif cid == "8.2":
+            n = len(v["present"])
+            put(cid, 1 if n == 4 else (0.5 if n >= 2 else 0),
+                f"{n} of 4 security headers present" + (f"; missing: {', '.join(v['missing'])}" if v["missing"] else ""))
+        elif cid == "8.3":
+            d, share, life = v["days_left"], v.get("left_share"), v.get("lifetime_days")
+            if share is None:                    # no issue date: assume a common 90-day certificate
+                share = d / 90
+            # a quarter of its own life left means automatic renewal should already have happened
+            late = share < 0.25 and d < 30
+            put(cid, 0 if (late and d < 7) else (0.5 if late else 1),
+                f"certificate expires in {d} days ({v['expires'][:10]})" + (f", of a {life}-day lifetime" if life else ""))
+        elif cid == "8.4":
+            ex = v["exposed"]
+            put(cid, 0 if ex else 1, ("answered like a real file: " + ", ".join(f"{e['path']} ({e['type']})" for e in ex)
+                                      + " (contents not downloaded, so not confirmed)") if ex else
+                f"{', '.join(v['checked'])} not publicly served")
+        elif cid == "8.5":
+            if not v["count"]:
+                put(cid, 0, f"no SPF record on {v['domain']}")
+            elif v["count"] > 1:
+                put(cid, 0.5, f"{v['count']} SPF records on {v['domain']} (only one is allowed)")
+            elif v["all"] in ("+all", "all"):
+                put(cid, 0.5, f"SPF on {v['domain']} ends in {v['all']}, which lets anyone send as you")
+            elif v["all"] == "?all":
+                put(cid, 0.5, f"SPF on {v['domain']} ends in ?all, which asks inboxes to treat unlisted senders as neutral")
+            else:
+                put(cid, 1, f"SPF record on {v['domain']}" + (f" ending {v['all']}" if v["all"] else ""))
+        elif cid == "8.6":
+            if not v["count"]:
+                put(cid, 0, f"no DMARC record on {v['domain']}")
+            elif v["policy"] in ("quarantine", "reject"):
+                put(cid, 1, f"DMARC on {v['domain']} with policy {v['policy']}")
+            else:
+                put(cid, 0.5, f"DMARC on {v['domain']} with policy {v['policy'] or 'missing'} (monitor only)")
+        elif cid == "8.7":
+            put(cid, 1, f"DKIM key found at selector {v['selector']}")
         elif cid == "6.6":
             b = v["broken"]
             put(cid, 1 if not b else 0,
@@ -282,11 +400,16 @@ def score(ev):
         s = round((sum(vals) / len(vals)) * 100) if vals else None
         cats[name] = {"score": s, "weight": weight, "checks": {i: res[i] for i in ids if i in res},
                       "excluded": excluded}
+    sections = {}
+    for name, ids in SECTIONS:
+        vals = [res[i]["score"] for i in ids if i in res and res[i]["score"] is not None]
+        sections[name] = {"score": round((sum(vals) / len(vals)) * 100) if vals else None,
+                          "checks": {i: res[i] for i in ids if i in res}}
     measured = [c for c in cats.values() if c["score"] is not None]
     wsum = sum(c["weight"] for c in measured)
     total = round(sum(c["score"] * c["weight"] for c in measured) / wsum) if wsum else 0
     grade = "A" if total >= 90 else "B" if total >= 75 else "C" if total >= 60 else "D" if total >= 40 else "F"
-    return {"categories": cats, "total": total, "grade": grade, "check_scores": res}
+    return {"categories": cats, "sections": sections, "total": total, "grade": grade, "check_scores": res}
 
 def fmt_bytes(b):
     if b < 1024: return f"{b}B"
@@ -333,6 +456,18 @@ IMPACT = {
     "6.4": "Social links let visitors see recent work and that the business is active.",
     "6.5": "A stated guarantee lowers the risk of trying you for the first time.",
     "6.6": "Broken links make a site look abandoned and stop visitors who click them.",
+    "7.1": "Screen readers read alt text aloud; an image without it is skipped or read as a file name, and Google uses it to understand images too.",
+    "7.2": "A field without a label is announced as just \"edit text\", so screen-reader users can't tell what to type and may give up on the form.",
+    "7.3": "Screen-reader users jump between headings to find their way; skipped levels make the page look like it has missing sections.",
+    "7.4": "Screen readers pick their voice and pronunciation from the page language; without it, the page can be read out wrong.",
+    "7.5": "Pale text on a pale background is hard to read for many people, and on phones outdoors.",
+    "8.1": "Without this header, a visitor's first visit can be quietly switched to an insecure connection on public Wi-Fi.",
+    "8.2": "These headers stop common tricks such as loading your site inside someone else's page or running injected scripts.",
+    "8.3": "When the certificate lapses, browsers show a full-page warning and most visitors leave.",
+    "8.4": "Files like these often hold passwords and keys. If anyone can download them, someone can take over the site or its accounts.",
+    "8.5": "SPF tells mail servers who may send email as your domain. Without it, scam emails can pose as you and your real email is more likely to land in spam.",
+    "8.6": "DMARC tells inboxes what to do with email that fails SPF/DKIM. Without it, look-alike email pretending to be you gets delivered.",
+    "8.7": "DKIM signs your email so inboxes can tell it really came from you.",
 }
 
 
@@ -365,6 +500,18 @@ LABELS = {
     "6.4": "Social profile links",
     "6.5": "Guarantee or warranty",
     "6.6": "Broken links",
+    "7.1": "Image alt text",
+    "7.2": "Form field labels",
+    "7.3": "Heading order",
+    "7.4": "Page language",
+    "7.5": "Text contrast",
+    "8.1": "HTTPS enforced (HSTS)",
+    "8.2": "Security headers",
+    "8.3": "Certificate expiry",
+    "8.4": "Private files not public (.env, .git)",
+    "8.5": "SPF email record",
+    "8.6": "DMARC email record",
+    "8.7": "DKIM email signing",
 }
 
 SELFSERVE_CLOSING = [
@@ -383,10 +530,24 @@ SELFSERVE_CLOSING = [
 
 def build_report(name, url, ev, sc, date_str, domain, variant="snapshot"):
     checks = sc["check_scores"]
-    fails = [(cid, d) for cid, d in checks.items() if d["score"] is not None and d["score"] < 1]
     sev_rank = {"CRITICAL": 0, "MAJOR": 1, "MINOR": 2}
-    fails_sorted = sorted(fails, key=lambda x: (sev_rank[fix_for(x[0], x[1]["score"])[0]], x[1]["score"]))
+
+    def ranked(items):
+        return sorted(items, key=lambda x: (sev_rank[fix_for(x[0], x[1]["score"])[0]], x[1]["score"], x[0]))
+    all_fails = [(cid, d) for cid, d in checks.items() if d["score"] is not None and d["score"] < 1]
+    fails = [f for f in all_fails if f[0] not in SECTION_IDS]       # graded checks only
+    fails_sorted = ranked(fails)
     passes = [cid for cid, d in checks.items() if d["score"] == 1]
+    sections = sc.get("sections") or {}
+
+    def finding(i, cid, d):
+        sev, title, effort, fix = fix_for(cid, d["score"])
+        A(f"### {i}. {title} -- {sev}")
+        A(f"- **Measured:** {d['why']} (method: {ev['checks'][cid]['method']}; {date_str})")
+        A(f"- **Why it costs you:** {IMPACT.get(cid, 'This check is below the audit bar.')}")
+        A(f"- **Fix:** {fix}")
+        A(f"- **Effort:** {effort}")
+        A("")
 
     L = []
     A = L.append
@@ -405,6 +566,10 @@ def build_report(name, url, ev, sc, date_str, domain, variant="snapshot"):
     for cname, _w, _ids in CATEGORIES:
         cs = sc['categories'][cname]['score']
         A(f"| {cname} | {'not measured' if cs is None else str(cs) + '/100'} | {sc['categories'][cname]['weight']} | {CAT_LINES[cname]} |")
+    for sname, _ids in SECTIONS:
+        if sname in sections and sections[sname]["checks"]:
+            ss = sections[sname]["score"]
+            A(f"| {sname} | {'not measured' if ss is None else str(ss) + '/100'} | not in grade | {SECTION_LINES[sname]} |")
     A("")
     # plain english
     worst = sorted([c for c in CATEGORIES if sc["categories"][c[0]]["score"] is not None],
@@ -428,17 +593,27 @@ def build_report(name, url, ev, sc, date_str, domain, variant="snapshot"):
         A("## FULL FINDINGS (ranked by severity -- biggest leaks first)")
         A("")
         for i, (cid, d) in enumerate(fails_sorted, 1):
-            sev, title, effort, fix = fix_for(cid, d["score"])
-            A(f"### {i}. {title} -- {sev}")
-            A(f"- **Measured:** {d['why']} (method: {ev['checks'][cid]['method']}; {date_str})")
-            A(f"- **Why it costs you:** {IMPACT.get(cid, 'This check is below the audit bar.')}")
-            A(f"- **Fix:** {fix}")
-            A(f"- **Effort:** {effort}")
-            A("")
+            finding(i, cid, d)
     else:
         A("## NO FINDINGS BELOW THE BAR")
-        A("Every measured check passed. Keep the fundamentals maintained." + ("" if variant == "selfserve" else " The Audit + Fix Plan adds a side-by-side with two local competitors."))
+        A("Every measured check in the grade passed. Keep the fundamentals maintained." + ("" if variant == "selfserve" else " The Audit + Fix Plan adds a side-by-side with two local competitors."))
         A("")
+    for sname, ids in SECTIONS:
+        if sname not in sections or not sections[sname]["checks"]:
+            continue                       # evidence from before these rows existed
+        sfails = ranked([f for f in all_fails if f[0] in ids])
+        ss = sections[sname]["score"]
+        A("---")
+        A("")
+        A(f"## {sname.upper()}: {'not measured' if ss is None else str(ss) + '/100'} (shown separately, not part of the grade)")
+        A("")
+        if sfails:
+            for i, (cid, d) in enumerate(sfails, 1):
+                finding(i, cid, d)
+        else:
+            A("Nothing below the bar in what could be measured here." if ss is not None else
+              "Nothing in this section could be measured on this run; see Not measured below.")
+            A("")
     if passes:
         A("**What passed:**")
         for cid in passes:
