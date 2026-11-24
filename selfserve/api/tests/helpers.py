@@ -20,6 +20,10 @@ class _Quiet(http.server.SimpleHTTPRequestHandler):
 
     def do_HEAD(self):
         self._seen()
+        if self.path in getattr(self.server, "slow_paths", ()):
+            import time
+            time.sleep(30)                  # a tarpit: never answers in time
+            return
         return super().do_HEAD()
 
     def do_GET(self):

@@ -22,6 +22,15 @@ import socket
 import struct
 import time
 
+try:
+    import idna as _idna_pkg         # already installed: requests depends on it
+
+    def _idna(name):
+        return _idna_pkg.encode(name, uts46=True)
+except ImportError:                  # pragma: no cover
+    def _idna(name):
+        raise ValueError("international names need the idna package")
+
 TYPE_TXT = 16
 CLASS_IN = 1
 MAX_POINTERS = 64
@@ -43,8 +52,11 @@ def nameservers(path="/etc/resolv.conf"):
 def encode_name(name):
     name = name.rstrip(".")
     try:
-        raw = name.encode("idna") if any(ord(c) > 127 for c in name) else name.encode("ascii")
-    except UnicodeError:
+        if any(ord(c) > 127 for c in name):
+            raw = _idna(name)            # IDNA 2008, as browsers and requests use (straße.de -> xn--strae-oqa.de)
+        else:
+            raw = name.encode("ascii")
+    except (UnicodeError, ValueError):
         raise ValueError("bad name") from None
     if not raw or len(raw) > 253:
         raise ValueError("bad name")
@@ -160,7 +172,8 @@ def _tcp(server, port, packet, timeout):
         s.close()
 
 
-def query_txt(name, timeout=2.0, servers=None, port=53):
+def query_txt(name, timeout=2.0, servers=None, port=53, deadline=None):
+    """deadline (time.monotonic()) caps the whole lookup, every server and retry included."""
     try:
         encode_name(name)
     except ValueError:
@@ -168,13 +181,21 @@ def query_txt(name, timeout=2.0, servers=None, port=53):
     servers = servers if servers is not None else nameservers()
     if not servers:
         return "error", []
+    if deadline is None:
+        deadline = time.monotonic() + timeout * 2 * len(servers)
     for server in servers:
+        left = deadline - time.monotonic()
+        if left < 0.2:
+            break
         qid = secrets.randbelow(65536)
         packet = build_query(name, qid)
         try:
-            status, recs = parse_response(_udp(server, port, packet, timeout), qid)
+            status, recs = parse_response(_udp(server, port, packet, min(timeout, left)), qid)
             if status == "truncated":
-                status, recs = parse_response(_tcp(server, port, packet, timeout), qid)
+                left = deadline - time.monotonic()
+                if left < 0.2:
+                    break
+                status, recs = parse_response(_tcp(server, port, packet, min(timeout, left)), qid)
             if status in ("ok", "nodata", "nxdomain"):
                 return status, recs
         except (OSError, ValueError, struct.error):

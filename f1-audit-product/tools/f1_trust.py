@@ -15,6 +15,7 @@ recorded as not measured with the reason, never as a failure.
 """
 import ipaddress
 import re
+import secrets
 import time
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
@@ -42,9 +43,31 @@ def _has_text(v):
     return bool(v and str(v).strip())
 
 
+HIDDEN_STYLE = re.compile(r"(display\s*:\s*none|visibility\s*:\s*hidden)", re.I)
+
+
+def _hidden(tag):
+    """Not shown to anyone, or hidden from screen readers: tracking pixels, noscript fallbacks, honeypots."""
+    for t in [tag] + list(tag.parents):
+        if getattr(t, "name", None) is None:
+            continue
+        if t.name == "noscript" or t.has_attr("hidden") or str(t.get("aria-hidden", "")).lower() == "true":
+            return True
+        if HIDDEN_STYLE.search(t.get("style") or ""):
+            return True
+    return False
+
+
+def _tiny(img):
+    return str(img.get("width", "")).strip() in ("0", "1") or str(img.get("height", "")).strip() in ("0", "1")
+
+
 def alt_text(soup):
-    imgs = soup.find_all("img")
-    missing = [i.get("src", "")[:100] for i in imgs if i.get("alt") is None]
+    imgs = [i for i in soup.find_all("img")
+            if not _hidden(i) and not _tiny(i)
+            and str(i.get("role", "")).lower() not in ("presentation", "none")]
+    missing = [i.get("src", "")[:100] for i in imgs
+               if i.get("alt") is None and not _has_text(i.get("aria-label")) and not _has_text(i.get("aria-labelledby"))]
     return {"n_images": len(imgs), "missing_alt": len(missing), "examples": missing[:3]}
 
 
@@ -54,6 +77,8 @@ def field_labels(soup):
     for f in soup.find_all(["input", "select", "textarea"]):
         if f.name == "input" and (f.get("type") or "text").lower() in FIELD_SKIP_TYPES:
             continue
+        if _hidden(f):
+            continue                          # honeypot fields hidden from people
         fields += 1
         ok = ((f.get("id") and f.get("id") in label_for)
               or f.find_parent("label") is not None
@@ -135,18 +160,31 @@ def _style(tag):
     return out
 
 
+def _large(tag, st):
+    """WCAG large text (3:1 is enough): at least 24px, or 18.66px bold. Default h1-h3 sizes qualify."""
+    m = re.fullmatch(r"([\d.]+)\s*(px|pt|em|rem)", (st.get("font-size") or "").strip().lower())
+    if m:
+        px = float(m.group(1)) * {"px": 1, "pt": 4 / 3, "em": 16, "rem": 16}[m.group(2)]
+        bold = (st.get("font-weight") or "").strip().lower() in ("bold", "bolder", "600", "700", "800", "900") \
+            or tag.name in ("b", "strong", "h1", "h2", "h3", "h4", "h5", "h6")
+        return px >= 24 or (bold and px >= 18.66)
+    return tag.name in ("h1", "h2", "h3")
+
+
 def contrast(soup):
     pairs = []
     for tag in soup.find_all(style=True):
+        if _hidden(tag):
+            continue
         st = _style(tag)
         fg = parse_color(st.get("color"))
-        bgv = st.get("background-color") or st.get("background") or ""
-        bg = parse_color(bgv) if " " not in bgv.strip() else None     # shorthand with images etc: skip
+        bg = parse_color(st.get("background-color") or st.get("background") or "")   # images, gradients: None
         if fg is None or bg is None or not tag.get_text(strip=True):
             continue
         ratio = round(contrast_ratio(fg, bg), 2)
-        pairs.append({"text": tag.get_text(" ", strip=True)[:40], "ratio": ratio})
-    low = [p for p in pairs if p["ratio"] < 4.5]
+        need = 3.0 if _large(tag, st) else 4.5
+        pairs.append({"text": tag.get_text(" ", strip=True)[:40], "ratio": ratio, "needs": need})
+    low = [p for p in pairs if p["ratio"] < p["needs"]]
     return {"n_pairs": len(pairs), "below_3": sum(1 for p in pairs if p["ratio"] < 3),
             "below_4_5": len(low), "examples": sorted(low, key=lambda p: p["ratio"])[:3]}
 
@@ -182,31 +220,56 @@ def cert_expiry(cert):
         return None
     try:
         exp = datetime.fromisoformat(cert["expires"])
+        issued = datetime.fromisoformat(cert["issued"]) if cert.get("issued") else None
     except ValueError:
         return None
     days = (exp - datetime.now(timezone.utc)).total_seconds() / 86400
-    return {"expires": cert["expires"], "days_left": int(days)}
+    life = (exp - issued).total_seconds() / 86400 if issued else None
+    # share of the certificate's own lifetime still left: short-lived certificates that renew
+    # themselves always have few days left, which is healthy
+    left_share = round(days / life, 3) if life and life > 0 else None
+    return {"expires": cert["expires"], "days_left": int(days), "lifetime_days": (int(life) if life else None),
+            "left_share": left_share}
+
+
+PROBE_TIMEOUT_S = 5
+
+
+def _probe(requests_mod, url):
+    """(status, content type, content length) from one HEAD, or None if it failed."""
+    try:
+        r = requests_mod.head(url, headers={"User-Agent": "Forge-F1-Audit/1.0"}, timeout=PROBE_TIMEOUT_S,
+                              allow_redirects=False)
+    except Exception:
+        return None
+    ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    cl = (r.headers.get("Content-Length") or "").strip()
+    return r.status_code, ctype, (int(cl) if cl.isdigit() else None)
+
+
+def _looks_like_file(ans):
+    st, ctype, length = ans
+    return (st == 200 and ctype and ctype not in ("text/html", "application/xhtml+xml") and length != 0)
 
 
 def exposed_files(requests_mod, final):
-    """One HEAD per path, redirects not followed, body never downloaded.
-    Exposed = answers 200 with a type that isn't a web page (a site's own
-    "page not found" served as 200 is HTML, so it doesn't count)."""
-    base = final
+    """One HEAD per path, redirects not followed, body never downloaded, plus one HEAD to a random
+    address that can't exist. "Answers as a file" = 200, a declared non-HTML type, not empty, and
+    not what the site answers for any address (catch-all servers and gateways answer everything)."""
     out, unknown = [], []
+    control = _probe(requests_mod, urljoin(final, "/apex-checkup-" + secrets.token_hex(8) + ".env"))
+    if control is None or control[0] in (405, 501):
+        return {"checked": [], "exposed": [], "unknown": list(EXPOSED_PATHS)}
+    catch_all = _looks_like_file(control)
     for path in EXPOSED_PATHS:
-        u = urljoin(base, path)
-        try:
-            r = requests_mod.head(u, headers={"User-Agent": "Forge-F1-Audit/1.0"}, timeout=10,
-                                  allow_redirects=False)
-        except Exception:
-            unknown.append(path)
-            continue
-        ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        if r.status_code in (405, 501):
-            unknown.append(path)                     # the server won't answer HEAD: can't tell
-        elif r.status_code == 200 and ctype not in ("text/html", "application/xhtml+xml"):
-            out.append({"path": path, "status": 200, "type": ctype or "unknown"})
+        ans = _probe(requests_mod, urljoin(final, path))
+        if ans is None or ans[0] in (405, 501):
+            unknown.append(path)                     # failed, or the server won't answer HEAD: can't tell
+        elif _looks_like_file(ans):
+            if catch_all and ans[1] == control[1]:
+                unknown.append(path)                 # answers like any made-up address: can't tell
+            else:
+                out.append({"path": path, "status": 200, "type": ans[1]})
     return {"checked": [p for p in EXPOSED_PATHS if p not in unknown], "exposed": out, "unknown": unknown}
 
 
@@ -226,19 +289,32 @@ def mail_domain(host):
 
 
 def _txt(name, deadline):
-    if time.monotonic() > deadline:
+    if deadline - time.monotonic() < 0.3:
         return "error", []
     try:
-        return TXT_LOOKUP(name)
+        return TXT_LOOKUP(name, deadline=deadline)
     except Exception:
         return "error", []
 
 
+SECOND_LEVEL = {"co", "com", "org", "net", "ac", "gov", "edu", "ltd", "plc", "me", "sch", "nhs", "or", "ne", "go"}
+
+
+def parent_domain(domain):
+    """shop.example.com -> example.com; never a public suffix like co.uk (a rough rule, no suffix list)."""
+    parts = domain.split(".")
+    if len(parts) < 3:
+        return None
+    parent = parts[1:]
+    if len(parent) == 2 and len(parent[1]) == 2 and parent[0] in SECOND_LEVEL:
+        return None                                  # smith.co.uk: the parent is co.uk
+    return ".".join(parent)
+
+
 def spf(domain, deadline):
     names = [domain]
-    parts = domain.split(".")
-    if len(parts) > 2:
-        names.append(".".join(parts[1:]))           # shop.example.com sends as example.com
+    if parent_domain(domain):
+        names.append(parent_domain(domain))          # shop.example.com sends as example.com
     for name in names:
         st, recs = _txt(name, deadline)
         if st == "error":
@@ -252,17 +328,20 @@ def spf(domain, deadline):
 
 def dmarc(domain, deadline):
     names = ["_dmarc." + domain]
-    parts = domain.split(".")
-    if len(parts) > 2:
-        names.append("_dmarc." + ".".join(parts[1:]))
-    for name in names:
+    if parent_domain(domain):
+        names.append("_dmarc." + parent_domain(domain))
+    for i, name in enumerate(names):
         st, recs = _txt(name, deadline)
         if st == "error":
             return None
         found = [r for r in recs if r.replace(" ", "").lower().startswith("v=dmarc1")]
         if found:
             m = re.search(r"(?:^|;)\s*p\s*=\s*(\w+)", found[0], re.I)
-            return {"domain": name[len("_dmarc."):], "count": len(found), "policy": (m.group(1).lower() if m else None)}
+            pol = m.group(1).lower() if m else None
+            if i > 0:                                # a parent's policy covers subdomains through sp=, if set
+                sp = re.search(r"(?:^|;)\s*sp\s*=\s*(\w+)", found[0], re.I)
+                pol = sp.group(1).lower() if sp else pol
+            return {"domain": name[len("_dmarc."):], "count": len(found), "policy": pol}
     return {"domain": domain, "count": 0, "policy": None}
 
 
@@ -281,7 +360,22 @@ def dkim(domain, deadline):
 # ---------------------------------------------------------------- wiring
 
 def add_checks(put, C, resp, soup, url, final, light, requests_mod):
-    """Write rows 7.x and 8.x through f1_measure's put()."""
+    """Write rows 7.x and 8.x through f1_measure's put().
+
+    Runs after every graded row, so it must never use up the run's time: the probes only start
+    with room for all three to time out, and DNS stops well before the deadline. Anything these
+    extra checks record in the guarded client's event log (a timeout, a refused address) is
+    removed again afterwards, so it can't mark the graded rows as cut short."""
+    events = getattr(requests_mod, "events", None)
+    mark = len(events) if isinstance(events, list) else None
+    try:
+        _add_checks(put, C, resp, soup, url, final, light, requests_mod)
+    finally:
+        if mark is not None:
+            del events[mark:]
+
+
+def _add_checks(put, C, resp, soup, url, final, light, requests_mod):
     a = alt_text(soup)
     put("7.1", a if a["n_images"] else None, "img tags without an alt attribute (alt=\"\" counts as decorative)",
         "" if a["n_images"] else "no images on the homepage")
@@ -308,7 +402,7 @@ def add_checks(put, C, resp, soup, url, final, light, requests_mod):
     left = getattr(requests_mod, "deadline", None)
     if light:
         put("8.4", None, "one HEAD request each to /.env and /.git/HEAD (files never downloaded)")
-    elif left is not None and left - time.monotonic() < 3:
+    elif left is not None and left - time.monotonic() < 3 * PROBE_TIMEOUT_S + 5:
         put("8.4", None, "one HEAD request each to /.env and /.git/HEAD (files never downloaded)",
             "the run reached its time limit before this check")
     else:
@@ -324,7 +418,7 @@ def add_checks(put, C, resp, soup, url, final, light, requests_mod):
         return
     deadline = time.monotonic() + DNS_BUDGET_S
     if left is not None:
-        deadline = min(deadline, left - 2)
+        deadline = min(deadline, left - 5)
     s = spf(domain, deadline)
     put("8.5", s, f"DNS TXT lookup for {domain} (v=spf1)", "" if s else "the DNS lookup did not complete")
     d = dmarc(domain, deadline)

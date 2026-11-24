@@ -91,8 +91,10 @@ def test_contrast_only_scores_inline_pairs_and_is_otherwise_not_measured():
     v = f1_trust.contrast(soup('<p style="color:#bbb;background-color:#fff">pale</p>'
                                '<p style="color:#777;background:#fff">grey</p>'
                                '<p style="color:#000;background:#fff url(x.png) no-repeat">img bg</p>'
-                               '<p style="color:#000">no bg</p>'))
-    assert v["n_pairs"] == 2 and v["below_3"] == 1 and v["below_4_5"] == 2
+                               '<p style="color:#000">no bg</p>'
+                               '<h2 style="color:#888; background-color: rgb(255, 255, 255) !important">big heading</h2>'
+                               '<p style="color:#888;background:#fff;font-size:30px">big text</p>'))
+    assert v["n_pairs"] == 4 and v["below_3"] == 1 and v["below_4_5"] == 2    # 3.54:1 is fine for large text
     assert score_of("7.5", v)["score"] == 0
     assert score_of("7.5", {"n_pairs": 1, "below_3": 0, "below_4_5": 1, "examples": [{"text": "x", "ratio": 4.48}]})["score"] == 0.5
     none = f1_trust.contrast(soup('<p class="pale">styled by a stylesheet</p>'))
@@ -120,12 +122,20 @@ def test_security_headers():
     assert "missing: content-security-policy" in score_of("8.2", o)["why"]
 
 
-def test_certificate_expiry_thresholds_and_severity():
-    def cert(days):
-        return {"valid": True, "expires": (datetime.now(timezone.utc) + timedelta(days=days, hours=1)).isoformat()}
-    assert score_of("8.3", f1_trust.cert_expiry(cert(90)))["score"] == 1
-    assert score_of("8.3", f1_trust.cert_expiry(cert(20)))["score"] == 0.5
+def test_certificate_expiry_judged_against_its_own_lifetime():
+    def cert(days, life=90):
+        n = datetime.now(timezone.utc)
+        exp = n + timedelta(days=days, hours=1)
+        return {"valid": True, "expires": exp.isoformat(), "issued": (exp - timedelta(days=life)).isoformat()}
+    assert score_of("8.3", f1_trust.cert_expiry(cert(60)))["score"] == 1
+    assert score_of("8.3", f1_trust.cert_expiry(cert(15)))["score"] == 0.5          # 90-day cert, should have renewed
     assert score_of("8.3", f1_trust.cert_expiry(cert(5)))["score"] == 0
+    # short-lived certificates that renew themselves are healthy with few days left
+    assert score_of("8.3", f1_trust.cert_expiry(cert(3, life=6)))["score"] == 1
+    assert score_of("8.3", f1_trust.cert_expiry(cert(20, life=45)))["score"] == 1
+    assert score_of("8.3", f1_trust.cert_expiry(cert(10, life=45)))["score"] == 0.5
+    no_issue = {"valid": True, "expires": (datetime.now(timezone.utc) + timedelta(days=40)).isoformat()}
+    assert score_of("8.3", f1_trust.cert_expiry(no_issue))["score"] == 1
     assert pipe.fix_for("8.3", 0)[0] == "CRITICAL" and pipe.fix_for("8.3", 0.5)[0] == "MAJOR"
     assert f1_trust.cert_expiry({"valid": False}) is None
 
@@ -136,16 +146,21 @@ class FakeHead:
 
     def head(self, url, **kw):
         self.calls.append((url, kw.get("allow_redirects")))
-        a = self.answers[url.split("x.example/", 1)[1]]
+        key = url.split("x.example/", 1)[1]
+        a = self.answers.get(key, self.answers.get("*", (404, "text/html")))
         if isinstance(a, Exception):
             raise a
-        return R({"Content-Type": a[1]}, a[0])
+        h = {"Content-Type": a[1]} if a[1] is not None else {}
+        if len(a) > 2:
+            h["Content-Length"] = str(a[2])
+        return R(h, a[0])
 
 
 def test_exposed_files_uses_one_head_each_and_ignores_soft_404_pages():
     fake = FakeHead({".env": (200, "application/octet-stream"), ".git/HEAD": (200, "text/html; charset=utf-8")})
     v = f1_trust.exposed_files(fake, "https://x.example/some/page")
-    assert [c[0] for c in fake.calls] == ["https://x.example/.env", "https://x.example/.git/HEAD"]
+    urls = [c[0] for c in fake.calls]
+    assert urls[0].startswith("https://x.example/apex-checkup-") and urls[1:] == ["https://x.example/.env", "https://x.example/.git/HEAD"]
     assert all(c[1] is False for c in fake.calls)                     # redirects are not followed
     assert v["exposed"] == [{"path": "/.env", "status": 200, "type": "application/octet-stream"}]
     s = score_of("8.4", v)
@@ -159,6 +174,31 @@ def test_exposed_files_unknown_when_server_refuses_or_request_fails():
     fake = FakeHead({".env": (405, ""), ".git/HEAD": OSError("reset")})
     v = f1_trust.exposed_files(fake, "https://x.example/")
     assert v["checked"] == [] and v["exposed"] == []
+    v = f1_trust.exposed_files(FakeHead({"*": (405, "")}), "https://x.example/")
+    assert v["unknown"] == ["/.env", "/.git/HEAD"]
+
+
+def test_catch_all_servers_empty_answers_and_missing_types_are_not_exposed():
+    # a gateway that answers 200 text/plain to every address: can't tell, not a finding
+    v = f1_trust.exposed_files(FakeHead({"*": (200, "text/plain")}), "https://x.example/")
+    assert v["exposed"] == [] and v["unknown"] == ["/.env", "/.git/HEAD"]
+    # catch-all JSON, but .env answers with a different type: still flagged
+    v = f1_trust.exposed_files(FakeHead({"*": (200, "application/json"), ".env": (200, "application/octet-stream")}),
+                               "https://x.example/")
+    assert [e["path"] for e in v["exposed"]] == ["/.env"]
+    v = f1_trust.exposed_files(FakeHead({".env": (200, "text/plain", 0), ".git/HEAD": (200, None)}), "https://x.example/")
+    assert v["exposed"] == [] and v["checked"] == ["/.env", "/.git/HEAD"]
+
+
+def test_hidden_images_pixels_and_honeypots_are_not_counted():
+    v = f1_trust.alt_text(soup('<img src=a alt=A><img src=b alt=B><img src=c alt=C>'
+                               '<noscript><img height=1 width=1 style="display:none" src="https://px.example/tr"></noscript>'
+                               '<img src=d aria-hidden="true"><img src=e role=presentation><img src=f aria-label="Logo">'
+                               '<div hidden><img src=g></div><img src=h style="visibility: hidden">'))
+    assert v["n_images"] == 4 and v["missing_alt"] == 0
+    f = f1_trust.field_labels(soup('<label>N <input name=n></label><div style="display:none"><input name=trap></div>'
+                                   '<input name=x2 hidden>'))
+    assert f["n_fields"] == 1 and f["unlabeled"] == 0
 
 
 # ---------------------------------------------------------------- email trust
@@ -166,7 +206,7 @@ def test_exposed_files_unknown_when_server_refuses_or_request_fails():
 def fake_dns(table):
     seen = []
 
-    def lookup(name):
+    def lookup(name, **_kw):
         seen.append(name)
         if name in table:
             v = table[name]
@@ -212,6 +252,37 @@ def test_subdomain_falls_back_to_parent_domain(monkeypatch):
     assert f1_trust.spf("shop.example.com", far())["domain"] == "example.com"
     assert f1_trust.dmarc("shop.example.com", far())["policy"] == "quarantine"
     assert seen[0] == "shop.example.com"
+
+
+def test_parent_fallback_never_reaches_a_public_suffix_and_respects_sp(monkeypatch):
+    assert f1_trust.parent_domain("smith.co.uk") is None
+    assert f1_trust.parent_domain("shop.smith.co.uk") == "smith.co.uk"
+    assert f1_trust.parent_domain("example.com") is None
+    lookup, seen = fake_dns({"_dmarc.example.com": ["v=DMARC1; p=reject; sp=none"]})
+    monkeypatch.setattr(f1_trust, "TXT_LOOKUP", lookup)
+    assert f1_trust.dmarc("shop.example.com", far())["policy"] == "none"
+    f1_trust.spf("smith.co.uk", far())
+    assert "co.uk" not in seen
+
+
+def test_spf_neutral_and_hsts_off(monkeypatch):
+    assert score_of("8.5", {"domain": "a", "count": 1, "all": "?all"})["score"] == 0.5
+    assert score_of("8.1", {"https": True, "present": True, "max_age": 0})["score"] == 0
+    assert pipe.fix_for("7.3", 0)[1] == "No headings on the homepage"
+
+
+def test_international_names_use_idna_2008():
+    q = dnstxt.encode_name("straße.de")
+    assert b"xn--strae-oqa" in q and b"strasse" not in q
+
+
+def test_old_evidence_without_new_rows_shows_no_empty_sections():
+    ev = {"checks": {"2.1": {"value": True, "method": "m", "ts": "t"}}}
+    sc = pipe.score(ev)
+    md = pipe.build_report("x", "https://x.example/", ev, sc, "2026-11-24", "x.example", variant="selfserve")
+    assert "ACCESSIBILITY" not in md and "not in grade" not in md
+    import runner
+    assert runner.structured(ev, sc, pipe)["sections"] == []
 
 
 def test_dns_failure_is_not_measured_never_a_fail(monkeypatch):
@@ -335,6 +406,35 @@ def test_free_check_shows_the_top_finding_of_each_section(trust_site):
     assert secs["Accessibility"]["top"]["severity"] == "MAJOR" and secs["Accessibility"]["failing"] == 5
     assert secs["Security and email trust"]["top"]["title"] == "Missing security headers"
     assert all(t["title"] not in {"Missing security headers", "Images missing alt text"} for t in res["top"])
+
+
+def test_slow_private_file_probe_cannot_wipe_graded_rows(trust_site):
+    srv, base = trust_site
+    srv.slow_paths = {"/.env"}
+    env = {"PATH": os.environ["PATH"], "SELFSERVE_TEST_ALLOW_LOOPBACK": "1", "RUNNER_TEST_DEADLINE": "40"}
+    p = subprocess.run([sys.executable, "-I", os.path.join(API, "runner.py"), "full", base + "/"],
+                       capture_output=True, text=True, timeout=120, env=env)
+    res = json.loads(p.stdout.strip().splitlines()[-1])
+    assert res["ok"]
+    nm = {n["id"]: n["reason"] for n in res["report"]["not_measured"]}
+    for cid in ("1.5", "1.6", "6.6"):
+        assert "time or request limit" not in nm.get(cid, ""), cid
+    f84 = [f for s in res["report"]["sections"] for f in s["findings"] if f["id"] == "8.4"][0]
+    assert "/.git/HEAD" in f84["measured"] and "/.env" not in f84["measured"]   # /.env timed out: not claimed
+
+
+def test_probes_are_skipped_when_time_is_short(trust_site):
+    srv, base = trust_site
+    srv.slow_paths = {"/.env"}
+    env = {"PATH": os.environ["PATH"], "SELFSERVE_TEST_ALLOW_LOOPBACK": "1", "RUNNER_TEST_DEADLINE": "15"}
+    p = subprocess.run([sys.executable, "-I", os.path.join(API, "runner.py"), "full", base + "/"],
+                       capture_output=True, text=True, timeout=120, env=env)
+    res = json.loads(p.stdout.strip().splitlines()[-1])
+    assert res["ok"]
+    nm = {n["id"]: n["reason"] for n in res["report"]["not_measured"]}
+    assert "time limit before this check" in nm["8.4"]
+    assert "1.5" not in nm and "6.6" not in nm
+    assert not [x for x in srv.seen if x[1] == "/.env"]
 
 
 def test_old_fixture_full_run_still_passes_with_new_rows():

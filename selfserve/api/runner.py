@@ -149,7 +149,7 @@ def structured(ev, sc, pipe):
     findings = [finding(cid, d) for cid, d in fails if cid not in pipe.SECTION_IDS]
     sections = [{"name": name, "score": (sc.get("sections") or {}).get(name, {}).get("score"),
                  "findings": [finding(cid, d) for cid, d in fails if cid in ids]}
-                for name, ids in pipe.SECTIONS]
+                for name, ids in pipe.SECTIONS if any(cid in checks for cid in ids)]
     passed = [{"id": cid, "title": pipe.LABELS.get(cid, cid), "measured": d["why"]}
               for cid, d in sorted(checks.items()) if d["score"] == 1]
     not_measured = [{"id": cid, "label": pipe.LABELS.get(cid, cid), "reason": d["why"]}

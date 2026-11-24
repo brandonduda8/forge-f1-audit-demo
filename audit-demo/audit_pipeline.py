@@ -92,10 +92,10 @@ FIXES = {
          "Send a Strict-Transport-Security header (max-age of at least 6 months) so browsers always use HTTPS."),
  "8.2": ("MINOR", "Missing security headers", "Needs a developer or your host, ~30 minutes",
          "Add the missing headers listed above (most hosts and CDNs have a setting or plugin for them); test the site after adding a Content-Security-Policy."),
- "8.3": ("MAJOR", "Certificate expires soon", "Needs your host, ~15 minutes",
-         "Renew the certificate now and turn on automatic renewal with your host."),
+ "8.3": ("MAJOR", "Certificate is close to expiring and hasn't renewed", "Needs your host, ~15 minutes",
+         "Check that automatic renewal is working with your host and renew the certificate now if it isn't."),
  "8.4": ("CRITICAL", "Private files may be public", "Needs a developer today, ~30 minutes",
-         "Block web access to these files (or delete them from the web server), then change every password or key they contain."),
+         "Open the addresses listed above in a browser to confirm. If the file opens, block web access to it (or delete it from the web server), then change any passwords or keys it holds."),
  "8.5": ("MAJOR", "No SPF email record", "DIY at your domain registrar, ~15 minutes",
          "Add an SPF TXT record listing the services that send your email (your email provider gives the exact text); end it with ~all or -all."),
  "8.6": ("MAJOR", "No DMARC email record", "DIY at your domain registrar, ~15 minutes",
@@ -178,8 +178,11 @@ def fix_for(cid, sc):
     if cid == "3.7" and sc == 0:
         return ("MAJOR", "Site not served over HTTPS", "Needs a developer or your host, ~1 hour",
                 "Turn on HTTPS (most hosts include a free certificate) and redirect every http:// address to https://.")
+    if cid == "7.3" and sc == 0:
+        return ("MINOR", "No headings on the homepage", "DIY, ~20 minutes",
+                "Mark the page's main title as H1 and each section title as H2, using the heading setting rather than bold text.")
     if cid == "8.3" and sc == 0:
-        return ("CRITICAL", "Certificate expires within 14 days", "Needs your host, today",
+        return ("CRITICAL", "Certificate expires within 7 days and hasn't renewed", "Needs your host, today",
                 "Renew the certificate now and turn on automatic renewal with your host; once it lapses, browsers block the site.")
     if cid == "8.5" and sc == 0.5:
         return ("MAJOR", "SPF email record is too loose or broken", "DIY at your domain registrar, ~15 minutes",
@@ -336,10 +339,12 @@ def score(ev):
             n, b3, b45 = v["n_pairs"], v["below_3"], v["below_4_5"]
             worst = f"; lowest {v['examples'][0]['ratio']}:1" if v.get("examples") else ""
             put(cid, 0 if b3 else (0.5 if b45 else 1),
-                f"{n} text/background pair(s) set inline; {b45} below 4.5:1{worst} (colours from stylesheets not checked)")
+                f"{n} text/background pair(s) set inline; {b45} below the WCAG minimum for their size{worst} (colours from stylesheets not checked)")
         elif cid == "8.1":
             if not v["present"]:
                 put(cid, 0, "no Strict-Transport-Security header")
+            elif not v["max_age"]:
+                put(cid, 0, "Strict-Transport-Security max-age is 0 or missing, which switches it off")
             elif (v["max_age"] or 0) < 15552000:
                 put(cid, 0.5, f"Strict-Transport-Security max-age {v['max_age']} (under 6 months)")
             else:
@@ -349,12 +354,17 @@ def score(ev):
             put(cid, 1 if n == 4 else (0.5 if n >= 2 else 0),
                 f"{n} of 4 security headers present" + (f"; missing: {', '.join(v['missing'])}" if v["missing"] else ""))
         elif cid == "8.3":
-            d = v["days_left"]
-            put(cid, 1 if d > 30 else (0.5 if d >= 14 else 0), f"certificate expires in {d} days ({v['expires'][:10]})")
+            d, share, life = v["days_left"], v.get("left_share"), v.get("lifetime_days")
+            if share is None:                    # no issue date: assume a common 90-day certificate
+                share = d / 90
+            # a quarter of its own life left means automatic renewal should already have happened
+            late = share < 0.25 and d < 30
+            put(cid, 0 if (late and d < 7) else (0.5 if late else 1),
+                f"certificate expires in {d} days ({v['expires'][:10]})" + (f", of a {life}-day lifetime" if life else ""))
         elif cid == "8.4":
             ex = v["exposed"]
-            put(cid, 0 if ex else 1, ("answered as a file: " + ", ".join(f"{e['path']} ({e['type']})" for e in ex)
-                                      + " (contents not downloaded)") if ex else
+            put(cid, 0 if ex else 1, ("answered like a real file: " + ", ".join(f"{e['path']} ({e['type']})" for e in ex)
+                                      + " (contents not downloaded, so not confirmed)") if ex else
                 f"{', '.join(v['checked'])} not publicly served")
         elif cid == "8.5":
             if not v["count"]:
@@ -363,6 +373,8 @@ def score(ev):
                 put(cid, 0.5, f"{v['count']} SPF records on {v['domain']} (only one is allowed)")
             elif v["all"] in ("+all", "all"):
                 put(cid, 0.5, f"SPF on {v['domain']} ends in {v['all']}, which lets anyone send as you")
+            elif v["all"] == "?all":
+                put(cid, 0.5, f"SPF on {v['domain']} ends in ?all, which asks inboxes to treat unlisted senders as neutral")
             else:
                 put(cid, 1, f"SPF record on {v['domain']}" + (f" ending {v['all']}" if v["all"] else ""))
         elif cid == "8.6":
@@ -555,7 +567,7 @@ def build_report(name, url, ev, sc, date_str, domain, variant="snapshot"):
         cs = sc['categories'][cname]['score']
         A(f"| {cname} | {'not measured' if cs is None else str(cs) + '/100'} | {sc['categories'][cname]['weight']} | {CAT_LINES[cname]} |")
     for sname, _ids in SECTIONS:
-        if sname in sections:
+        if sname in sections and sections[sname]["checks"]:
             ss = sections[sname]["score"]
             A(f"| {sname} | {'not measured' if ss is None else str(ss) + '/100'} | not in grade | {SECTION_LINES[sname]} |")
     A("")
@@ -587,8 +599,8 @@ def build_report(name, url, ev, sc, date_str, domain, variant="snapshot"):
         A("Every measured check in the grade passed. Keep the fundamentals maintained." + ("" if variant == "selfserve" else " The Audit + Fix Plan adds a side-by-side with two local competitors."))
         A("")
     for sname, ids in SECTIONS:
-        if sname not in sections:
-            continue
+        if sname not in sections or not sections[sname]["checks"]:
+            continue                       # evidence from before these rows existed
         sfails = ranked([f for f in all_fails if f[0] in ids])
         ss = sections[sname]["score"]
         A("---")

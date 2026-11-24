@@ -49,7 +49,9 @@ def cert_info(host):
                 cert = ss.getpeercert()
                 exp = ssl.cert_time_to_seconds(cert["notAfter"])
                 sans = [v for t, v in cert.get("subjectAltName", []) if t == "DNSName"]
-                return {"valid": True, "expires": datetime.fromtimestamp(exp, timezone.utc).isoformat(),
+                nb = cert.get("notBefore")
+                issued = datetime.fromtimestamp(ssl.cert_time_to_seconds(nb), timezone.utc).isoformat() if nb else None
+                return {"valid": True, "expires": datetime.fromtimestamp(exp, timezone.utc).isoformat(), "issued": issued,
                         "sans": sans, "host_in_san": host in sans or any(x.startswith("*.") and host.endswith(x[1:]) for x in sans)}
     except Exception as e:
         return {"valid": False, "error": str(e)}
