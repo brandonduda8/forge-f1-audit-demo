@@ -52,10 +52,9 @@ def nameservers(path="/etc/resolv.conf"):
 def encode_name(name):
     name = name.rstrip(".")
     try:
-        if any(ord(c) > 127 for c in name):
-            raw = _idna(name)            # IDNA 2008, as browsers and requests use (straße.de -> xn--strae-oqa.de)
-        else:
-            raw = name.encode("ascii")
+        # IDNA 2008 per label, as browsers and requests use (straße.de -> xn--strae-oqa.de); ASCII labels
+        # such as _dmarc and _domainkey stay as they are (the idna package refuses underscores)
+        raw = b".".join(_idna(l) if any(ord(c) > 127 for c in l) else l.encode("ascii") for l in name.split("."))
     except (UnicodeError, ValueError):
         raise ValueError("bad name") from None
     if not raw or len(raw) > 253:

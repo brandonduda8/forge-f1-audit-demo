@@ -274,6 +274,8 @@ def test_spf_neutral_and_hsts_off(monkeypatch):
 def test_international_names_use_idna_2008():
     q = dnstxt.encode_name("straße.de")
     assert b"xn--strae-oqa" in q and b"strasse" not in q
+    assert dnstxt.encode_name("_dmarc.straße.de") == b"\x06_dmarc\x0dxn--strae-oqa\x02de\x00"
+    assert b"\x0a_domainkey" in dnstxt.encode_name("selector1._domainkey.bücher.de")
 
 
 def test_old_evidence_without_new_rows_shows_no_empty_sections():
