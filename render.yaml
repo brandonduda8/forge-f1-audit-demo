@@ -37,13 +37,35 @@ services:
         sync: false
       - key: CHECKUP_PRICE_CENTS    # 2900 = $29.00 (100 for a one-dollar live test)
         value: "2900"
+      - key: PRO_PRICE_CENTS        # Pro Checkup, homepage + up to 4 more pages
+        value: "7900"
+      - key: MONITOR_PRICE_CENTS    # Monthly Monitoring; must match the Square plan made by square_cli.py create-monitor-plan
+        value: "1900"
+      - key: SQUARE_MONITOR_PLAN_VARIATION_ID   # printed by create-monitor-plan; monitoring stays hidden until set
+        sync: false
+      - key: ADMIN_TOKEN            # your owner page password, 24+ random characters; admin is off without it
+        sync: false
+      - key: MAIL_BACKEND           # off until you choose to send buyers their two emails (report ready, monthly check)
+        value: "off"
+      - key: SMTP_HOST              # only when MAIL_BACKEND=smtp
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: MAIL_REPLY_TO
+        sync: false
 
   - type: web
     name: apex-checkup
     runtime: static
     rootDir: selfserve/site
     # publish only the pages, never tests or notes
-    buildCommand: python3 build_config.py && mkdir -p public && cp *.html *.css *.js robots.txt public/ && rm -f public/config.example.js
+    buildCommand: python3 build_config.py --publish public
     staticPublishPath: public
     headers:
       - path: /*
@@ -64,3 +86,7 @@ services:
         value: $29
       - key: APEX_SUPPORT_EMAIL     # required: where refund and privacy requests go (shown on privacy and terms pages)
         sync: false
+      - key: APEX_SITE_ORIGIN       # optional: the site's https address; adds canonical links and sitemap.xml for search
+        sync: false
+      - key: APEX_EMAILS            # "on" only when the API's MAIL_BACKEND=smtp, so the pages never promise an email that won't come
+        value: "off"
