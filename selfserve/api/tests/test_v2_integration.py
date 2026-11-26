@@ -88,7 +88,7 @@ def wait_for(cond, timeout=150):
 def world(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     sq = FakeSquare()
-    var = sq.add_plan_variation(1900)
+    var = sq.add_plan_variation(2900)
     site, site_url = serve_site("example-roofing")
     env = {"SITE_ORIGIN": ORIGIN, "SQUARE_ACCESS_TOKEN": TOKEN, "SQUARE_ENV": "sandbox",
            "SQUARE_LOCATION_ID": LOC, "SQUARE_API_BASE": sq.base, "SQUARE_WEBHOOK_SIGNATURE_KEY": SIG_KEY,
@@ -131,7 +131,7 @@ def test_plans_show_all_three_with_real_prices(world):
     code, out = call(world["base"], "/api/plans")
     assert code == 200
     by = {p["id"]: p for p in out["plans"]}
-    assert (by["checkup"]["cents"], by["pro"]["cents"], by["monitor"]["cents"]) == (2900, 7900, 1900)
+    assert (by["checkup"]["cents"], by["pro"]["cents"], by["monitor"]["cents"]) == (2900, 7900, 2900)
     assert all(p["available"] for p in out["plans"])
     assert world["var"] not in json.dumps(out)          # never exposes the catalog id
 
@@ -157,7 +157,7 @@ def test_pro_price_is_enforced(world):
 def test_monitor_full_lifecycle(world):
     w, sq, mailer, monitor = world, world["sq"], world["mailer"], world["monitor"]
     sq.add_customer("CUST0000000001", "owner@roof.example")
-    oid = buy(w, "monitor", 1900, customer="CUST0000000001")
+    oid = buy(w, "monitor", 2900, customer="CUST0000000001")
     sq.subscribe("SUBINT000000001", "CUST0000000001", variation=w["var"])
 
     # signed webhook builds the report early and sends exactly one "report ready" email
@@ -181,7 +181,7 @@ def test_monitor_full_lifecycle(world):
     code, s = call(w["base"], "/api/admin/summary?days=30", headers={"Authorization": "Bearer " + ADMIN})
     assert code == 200, s
     sales = s.get("sales") or s
-    assert sales["active_subscriptions"] >= 1 and sales["mrr_cents"] >= 1900
+    assert sales["active_subscriptions"] >= 1 and sales["mrr_cents"] >= 2900
     assert sales["by_plan"]["monitor"]["count"] >= 1
     assert "owner@roof.example" not in json.dumps(s)    # no buyer emails in the owner view
 

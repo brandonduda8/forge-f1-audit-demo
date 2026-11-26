@@ -39,10 +39,10 @@ services:
         value: "2900"
       - key: PRO_PRICE_CENTS        # Pro Checkup, homepage + up to 4 more pages
         value: "7900"
-      - key: MONITOR_FIRST_CENTS    # Monthly Monitoring, first month (includes the full report); must match the Square plan
+      - key: MONITOR_FIRST_CENTS    # Monthly Monitoring first month (includes the full report); keep equal to the monthly price
         value: "2900"
-      - key: MONITOR_PRICE_CENTS    # Monthly Monitoring, every month after; must match the Square plan made by create-monitor-plan
-        value: "1900"
+      - key: MONITOR_PRICE_CENTS    # Monthly Monitoring every month; must match the Square plan made by create-monitor-plan
+        value: "2900"
       - key: SQUARE_MONITOR_PLAN_VARIATION_ID   # printed by create-monitor-plan; monitoring stays hidden until set
         sync: false
       - key: ADMIN_TOKEN            # your owner page password, 24+ random characters; admin is off without it

@@ -1272,3 +1272,12 @@ def test_store_folder_and_file_are_private(tmp_path, monkeypatch):
         if os.path.exists(d / f):
             assert os.stat(d / f).st_mode & 0o777 == 0o600, f
     s.close()
+
+
+def test_renewal_terms_one_price_reads_as_one_price():
+    import mailer as _m
+    lines = " ".join(_m.renewal_terms({"first_cents": 2900, "cents": 2900}))
+    assert "$29.00 a month" in lines or "$29 a month" in lines
+    assert "for the first month" not in lines and "then" not in lines.split("renews")[0]
+    two = " ".join(_m.renewal_terms({"first_cents": 2900, "cents": 1900}))
+    assert "for the first month" in two

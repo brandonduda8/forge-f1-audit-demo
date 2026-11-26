@@ -425,7 +425,8 @@ def test_landing_pages_only_describe_real_checks():
 def test_index_pricing_section():
     html = read("index.html")
     for plan in ("checkup", "pro", "monitor"):
-        assert f'data-plan-card="{plan}"' in html and f'data-buy-plan="{plan}"' in html and f'data-plan-price="{plan}"' in html
+        price = "data-plan-terms" if plan == "monitor" else "data-plan-price"   # monitoring shows its whole price sentence
+        assert f'data-plan-card="{plan}"' in html and f'data-buy-plan="{plan}"' in html and f'{price}="{plan}"' in html
     monitor = re.search(r'<article class="plan" data-plan-card="monitor"[^>]*>', html).group(0)
     assert " hidden" in monitor, "the monitor card starts hidden until /api/plans says it's available"
     btn = re.search(r'<button[^>]*data-buy-plan="monitor"[^>]*>', html).group(0)
@@ -560,12 +561,15 @@ def test_publish_refuses_the_site_folder_itself():
 
 
 # ---------------------------------------------------------------- review fixes (round 1)
-TWO_PHASE = '<span data-plan-terms="monitor">$29 for the first month, then $19 a month</span>'
+# Square's subscription checkout documents one paid phase, so the default is one price ($29 a month,
+# never less than the Checkup). The pages fill the real price sentence from /api/plans at runtime,
+# which reads "$X for the first month, then $Y a month" only if the two prices ever differ.
+TWO_PHASE = '<span data-plan-terms="monitor">$29 a month</span>'
 
 
 @pytest.mark.parametrize("name", ["index.html", "terms.html", *LANDING])
 def test_monitoring_price_is_two_phase_everywhere(name):
-    """Every page that describes Monthly Monitoring shows both prices (filled from /api/plans at runtime)."""
+    """Every page that describes Monthly Monitoring shows the price sentence (filled from /api/plans at runtime)."""
     html = read(name)
     assert TWO_PHASE in html, name
 
@@ -575,8 +579,7 @@ def test_no_page_shows_a_single_monitoring_price():
         html = read(name)
         text = re.sub(r"<[^>]+>", "", html)
         assert "per month" not in text, f"{name}: say 'a month' after the first month"
-        if 'data-plan-price="monitor"' in html:
-            assert "for the first month" in html, f"{name} shows the monthly price without the first-month price"
+        assert 'data-plan-price="monitor"' not in html, f"{name}: use the whole price sentence (data-plan-terms)"
         assert not re.search(r"renews (each month|monthly) at the price shown", text, re.I), name
 
 
@@ -586,7 +589,7 @@ def test_landing_monitoring_line_only_when_monitoring_is_on_sale():
             continue
         line = re.search(r'<p[^>]*data-if-plan="monitor"[^>]*>(.*?)</p>', read(name), re.S)
         assert line and " hidden" in line.group(0), name
-        for words in ("for the first month", "renews monthly until you cancel online from your dashboard", "end of the month"):
+        for words in ("full report comes with the first month", "renews monthly until you cancel online from your dashboard", "end of the month"):
             assert words in line.group(1), (name, words)
 
 
@@ -596,14 +599,14 @@ def test_index_auto_renew_disclosure_names_both_prices():
     assert TWO_PHASE in renew
     assert 'href="terms.html#monitoring"' in renew
     card = re.search(r'<article class="plan" data-plan-card="monitor".*?</article>', html, re.S).group(0)
-    assert 'data-plan-first-price="monitor"' in card and 'data-plan-price="monitor"' in card
+    assert 'data-plan-terms="monitor"' in card
     assert "data-if-emails" not in card, "monitoring is only sold with emails on, so its emails aren't conditional"
 
 
 def test_terms_match_the_decisions():
     terms = re.sub(r"\s+", " ", read("terms.html"))
     assert 'id="monitoring"' in terms
-    for words in ("two prices", "first-month price, which includes the full report",
+    for words in ("the first month includes the full report", "both prices are shown here and on Square's checkout",
                   "only sold while our order emails are switched on",
                   "we cancel the subscription first", "Find my report can email your links",
                   "History for one-time reports is deleted after 30 days",
@@ -662,7 +665,7 @@ def test_fixtures_are_real_server_shapes():
     assert "id" not in dash["subscription"], "server.public_subscription leaves out the subscription id"
     plans = json.load(open(os.path.join(fx, "plans.json")))
     mon = [p for p in plans["plans"] if p["id"] == "monitor"][0]
-    assert mon["first_cents"] == 2900 and mon["cents"] == 1900
+    assert mon["first_cents"] == 2900 and mon["cents"] == 2900
 
 
 def _keys_cover(fixture, real, where):

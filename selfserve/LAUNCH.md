@@ -1,4 +1,4 @@
-# Launch taps: Apex Forge (Checkup $29, Pro $79, Monthly Monitoring $29 first month then $19/month, all on Square)
+# Launch taps: Apex Forge (Checkup $29, Pro $79, Monthly Monitoring $29/month, all on Square)
 
 Everything is built and tested against a stand-in Square. Nothing is deployed, published or connected.
 These are the steps only Brandon can do, in order. Sandbox first, so no real money moves until step 6.
@@ -26,9 +26,10 @@ checks), the payments kit PR, then the v2 PR. Close the old Stripe PR 3 without 
 Follow `selfserve/SQUARE-KIT.md`. In short:
 1. Developer Console → your app → **Sandbox** → copy the access token and a location id into Render.
 2. On your own computer, run `square_cli.py doctor`, then `square_cli.py create-monitor-plan`, and paste the
-   variation id it prints into Render as `SQUARE_MONITOR_PLAN_VARIATION_ID`. The plan it makes charges
-   `MONITOR_FIRST_CENTS` ($29) the first month, then `MONITOR_PRICE_CENTS` ($19) each month, and `doctor` checks
-   both match Render. The monitoring plan appears on the site only after this and after step 5's emails are on.
+   variation id it prints into Render as `SQUARE_MONITOR_PLAN_VARIATION_ID`. The plan charges
+   `MONITOR_PRICE_CENTS` ($29) every month, and `doctor` checks it matches Render. Square's subscription checkout
+   documents one price per plan, so keep `MONITOR_FIRST_CENTS` equal to it unless a sandbox test shows an
+   intro price works. The monitoring plan appears on the site only after this and after step 5's emails are on.
 3. Add the webhook subscription (four events) and put its signature key and URL into Render.
 
 ## 4. Test it yourself in the sandbox (about 15 min)
@@ -59,7 +60,7 @@ a copy of the renewal terms and a way to get their cancel link back.
 2. Do one real purchase on your own site (set `CHECKUP_PRICE_CENTS=100` first for a $1 test), check the report
    loads, then press **Refund me automatically** or refund in the Square Dashboard. Set the price back to `2900`.
 3. Before selling Monthly Monitoring, do the same once with it: make a $1 test plan (`MONITOR_FIRST_CENTS=100`,
-   `MONITOR_PRICE_CENTS=100`, then `create-monitor-plan --production`), buy it, check the report and dashboard
+   `MONITOR_PRICE_CENTS=100`, `CHECKUP_PRICE_CENTS=100`, then `create-monitor-plan --production`), buy it, check the report and dashboard
    load and the "report ready" email arrives, press **Cancel monitoring**, and refund yourself. Then put the
    prices back, make the real plan again and paste its variation id.
 

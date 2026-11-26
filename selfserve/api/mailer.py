@@ -98,8 +98,10 @@ def renewal_terms(terms):
     """The Monthly Monitoring terms, in plain words (also what the buyer keeps in the email)."""
     terms = terms or {}
     first, monthly = money(terms.get("first_cents")), money(terms.get("cents"))
-    if first and monthly:
+    if first and monthly and first != monthly:
         price = f"{first} for the first month (it includes this full report), then {monthly} a month."
+    elif monthly:
+        price = f"{monthly} a month (the first month includes this full report)."
     else:
         price = "the price shown at checkout."
     return ["Your Monthly Monitoring plan: " + price,
