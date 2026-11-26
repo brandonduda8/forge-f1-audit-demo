@@ -1,10 +1,13 @@
-"""mailer.py - the two transactional emails a buyer can get, as plain text (stdlib only).
+"""mailer.py - the three transactional emails a buyer can get, as plain text (stdlib only).
 
-Only two emails exist, and each goes only to the buyer's own email address as
-Square recorded it at checkout:
-  * report_ready    after a payment: your report is ready (report link + dashboard link)
+Only these exist, and each goes only to the buyer's own email address as Square
+recorded it at checkout:
+  * report_ready    after a payment: your report is ready (report link + dashboard link;
+                    for Monthly Monitoring also the renewal terms, so the buyer keeps a copy)
   * monitor_report  after a monthly monitoring re-check: what changed (report link +
                     dashboard link, where monitoring can be cancelled)
+  * find_links      the buyer asked "find my report": the links for their purchases
+                    (sent to the address that paid, never shown on the page)
 No marketing, no lists, no other recipients.
 
 Environment:
@@ -26,6 +29,7 @@ import re
 import smtplib
 import ssl
 import sys
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 from urllib.parse import quote
@@ -33,7 +37,8 @@ from urllib.parse import quote
 ADDR_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
                      r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$")
 HOST_RE = re.compile(r"^[a-z0-9.-]{1,253}$")
-KINDS = ("report_ready", "monitor_report")
+KINDS = ("report_ready", "monitor_report", "find_links")
+FIND_MAX = 5
 
 CAPTURED = []          # MAIL_BACKEND=capture (tests only, needs SELFSERVE_TEST_ALLOW_LOOPBACK=1)
 
@@ -81,12 +86,37 @@ def links(order_id):
     return o + "/report.html?order_id=" + q, o + "/dashboard.html?order_id=" + q
 
 
-def compose(kind, to, *, order_id, site, plan="checkup", grade=None, score=None, changes=None):
-    """(subject, body) for one of the two emails. Pure: no network."""
+def money(cents):
+    try:
+        c = int(cents)
+    except (TypeError, ValueError):
+        return ""
+    return "$%d" % (c // 100) if c % 100 == 0 else "$%d.%02d" % (c // 100, c % 100)
+
+
+def renewal_terms(terms):
+    """The Monthly Monitoring terms, in plain words (also what the buyer keeps in the email)."""
+    terms = terms or {}
+    first, monthly = money(terms.get("first_cents")), money(terms.get("cents"))
+    if first and monthly:
+        price = f"{first} for the first month (it includes this full report), then {monthly} a month."
+    else:
+        price = "the price shown at checkout."
+    return ["Your Monthly Monitoring plan: " + price,
+            "It renews every month until you cancel, and we re-check your website each month.",
+            "Cancel online any time from your dashboard (link above). Cancelling takes effect",
+            "at the end of the month you have already paid for; there is no charge after that."]
+
+
+def compose(kind, to, *, order_id=None, site=None, plan="checkup", grade=None, score=None, changes=None,
+            terms=None, items=None):
+    """(subject, body) for one of the emails. Pure: no network."""
     if kind not in KINDS:
         raise MailError("unknown email kind")
+    if kind == "find_links":
+        return _compose_find(items)
     site = _site(site)
-    report, dash = links(order_id)
+    report, dash = links(order_id or "")
     if kind == "report_ready":
         subject = f"Your website checkup for {site} is ready"
         lines = [
@@ -102,9 +132,7 @@ def compose(kind, to, *, order_id, site, plan="checkup", grade=None, score=None,
             "These links work only for this purchase, so keep this email.",
         ]
         if plan == "monitor":
-            lines += ["",
-                      "Monthly Monitoring renews every month at the price shown at checkout until you cancel.",
-                      "Cancel online from your dashboard; it takes effect at the end of the paid month."]
+            lines += [""] + renewal_terms(terms)
     else:
         subject = f"Monthly check of {site}: " + _headline(changes, grade, score)
         lines = ["Hello,", "", f"We re-checked {site} as part of your Monthly Monitoring plan."]
@@ -118,10 +146,31 @@ def compose(kind, to, *, order_id, site, plan="checkup", grade=None, score=None,
                   "",
                   "Manage or cancel your monitoring plan (cancelling takes effect at the end of the paid month):",
                   dash]
-    lines += ["", "Apex Forge Website Checkup",
-              "You get this email because you bought a checkup with this address. We send only",
-              "emails about your own purchase."]
+    lines += _footer()
     return _safe_line(subject, 150), "\n".join(lines) + "\n"
+
+
+def _footer():
+    return ["", "Apex Forge Website Checkup",
+            "You get this email because you bought a checkup with this address. We send only",
+            "emails about your own purchase."]
+
+
+def _compose_find(items):
+    items = [i for i in (items or []) if isinstance(i, dict) and i.get("order_id")][:FIND_MAX]
+    if not items:
+        raise MailError("nothing to send")
+    lines = ["Hello,", "", "Someone (we hope you) asked us to resend the links for your website checkup."
+             " Here they are:", ""]
+    for i in items:
+        report, dash = links(i["order_id"])
+        when = ""
+        if isinstance(i.get("created"), (int, float)):
+            when = " (bought " + datetime.fromtimestamp(i["created"], timezone.utc).strftime("%Y-%m-%d") + ")"
+        lines += [_site(i.get("site")) + when, "  Report: " + report, "  Dashboard (plan, history, cancel): " + dash, ""]
+    lines += ["If you didn't ask for this, you can ignore this email: the links were sent only to you."]
+    lines += _footer()
+    return "Your Apex Forge checkup links", "\n".join(lines) + "\n"
 
 
 def _headline(changes, grade, score):

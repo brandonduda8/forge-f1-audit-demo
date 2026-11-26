@@ -162,9 +162,10 @@ def test_monitor_full_lifecycle(world):
     # signed webhook builds the report early and sends exactly one "report ready" email
     assert signed_hook(w["base"], oid) == 200
     assert signed_hook(w["base"], oid) == 200
-    wait_for(lambda: any(kind(m) == "report_ready" for m in mailer.CAPTURED))
+    mine = lambda m: "order_id=" + oid in text(m)        # noqa: E731  (earlier tests' buyers get theirs too)
+    wait_for(lambda: any(kind(m) == "report_ready" and mine(m) for m in mailer.CAPTURED))
     time.sleep(1)
-    ready = [m for m in mailer.CAPTURED if kind(m) == "report_ready"]
+    ready = [m for m in mailer.CAPTURED if kind(m) == "report_ready" and mine(m)]
     assert len(ready) == 1 and ready[0]["To"] == "owner@roof.example"
     assert "dashboard.html?order_id=" + oid in text(ready[0])
 
