@@ -1,11 +1,14 @@
 """square_cli.py - the owner's command line for the Square side of Apex Forge.
 
-Run it where the server's environment variables are set (for example Render's Shell):
+Run it on your own computer with the server's settings exported in the terminal
+(see selfserve/SQUARE-KIT.md):
 
   python selfserve/api/square_cli.py doctor                 check the settings and the Square account
   python selfserve/api/square_cli.py plans                  the plans and prices the site offers
   python selfserve/api/square_cli.py sales [--days N]       sales from Square for the last N days (default 30)
-  python selfserve/api/square_cli.py create-monitor-plan    make the $/month plan in Square's catalog
+  python selfserve/api/square_cli.py create-monitor-plan    make the monitoring plan in Square's catalog
+                                                            (MONITOR_PRICE_CENTS a month; a first-month
+                                                            intro price only if MONITOR_FIRST_CENTS differs)
         [--production]                                      (needed, plus typing yes, when SQUARE_ENV=production)
         [--force]                                           (make another even if one is already set)
 
@@ -24,8 +27,17 @@ def _money(c):
     return f"${c / 100:,.2f}"
 
 
+def _monitor_price(first, monthly):
+    if first == monthly:
+        return f"{_money(monthly)} a month"
+    return f"{_money(first)} for the first month, then {_money(monthly)} a month"
+
+
 def cmd_doctor(_args, out):
-    rows = pay.check_setup()
+    try:
+        rows = pay.check_setup()
+    except Exception as e:                     # check_setup never raises; this is a last guard
+        rows = [("FAIL", f"the check stopped unexpectedly ({type(e).__name__})")]
     for status, msg in rows:
         print(f"{status:<4} {msg}", file=out)
     failed = any(s == "FAIL" for s, _ in rows)
@@ -35,9 +47,10 @@ def cmd_doctor(_args, out):
 
 def cmd_plans(_args, out):
     for p in pay.public_plans():
-        per = " a month" if p["kind"] == "subscription" else ""
+        price = (_monitor_price(p["first_cents"], p["cents"]) if p["kind"] == "subscription"
+                 else _money(p["cents"]))
         state = "" if p["available"] else "   (hidden: SQUARE_MONITOR_PLAN_VARIATION_ID is not set)"
-        print(f"{p['id']:<8} {_money(p['cents']) + per:<16} {p['label']}{state}", file=out)
+        print(f"{p['id']:<8} {price:<16} {p['label']}{state}", file=out)
     return 0
 
 
@@ -48,11 +61,14 @@ def cmd_sales(args, out):
         print(f"FAIL could not read sales from Square ({e})", file=out)
         return 1
     print(f"Last {s['days']} days (read from Square)", file=out)
+    if s.get("truncated"):
+        print("  NOTE Square had more records than this command reads, so these numbers may be low", file=out)
     print(f"  orders           {s['orders']}", file=out)
     print(f"  gross            {_money(s['gross_cents'])}", file=out)
     print(f"  refunded         {_money(s['refunded_cents'])}", file=out)
     print(f"  net              {_money(s['net_cents'])}", file=out)
     print(f"  active monitors  {s['active_subscriptions']}", file=out)
+    print(f"  cancelling       {s.get('cancelling', 0)}  (paid up, ending at the end of their month)", file=out)
     print(f"  monthly recurring {_money(s['mrr_cents'])}", file=out)
     for plan, v in s["by_plan"].items():
         print(f"  {plan:<8} {v['count']:>4} sold  {_money(v['gross_cents'])}", file=out)
@@ -74,8 +90,9 @@ def cmd_create_monitor_plan(args, out, stdin):
             print("REFUSED SQUARE_ENV is production. Try it in sandbox first; to really create the plan in "
                   "production run again with --production.", file=out)
             return 2
-        cents = pay.plan_info("monitor")["cents"]
-        print(f"This creates a real {_money(cents)}/month plan in your PRODUCTION Square account.", file=out)
+        m = pay.plan_info("monitor")
+        print(f"This creates a real plan ({_monitor_price(m['first_cents'], m['cents'])}) in your "
+              "PRODUCTION Square account.", file=out)
         print("Type yes to go ahead: ", end="", file=out)
         out.flush()
         answer = (stdin.readline() or "").strip()
@@ -91,7 +108,8 @@ def cmd_create_monitor_plan(args, out, stdin):
     except (pay.SquareUnavailable, pay.PaymentError) as e:
         print(f"FAIL {e}", file=out)
         return 1
-    print(f"Created the Monthly Monitoring plan in Square {env} at {_money(made['cents'])} a month.", file=out)
+    print(f"Created the Monthly Monitoring plan in Square {env}: "
+          f"{_monitor_price(made['first_cents'], made['cents'])}.", file=out)
     print("Paste this into Render as SQUARE_MONITOR_PLAN_VARIATION_ID:", file=out)
     print(made["variation_id"], file=out)
     return 0

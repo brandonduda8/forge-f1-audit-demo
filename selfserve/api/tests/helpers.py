@@ -92,7 +92,12 @@ class FakeSquare:
     """Enough of Square's API for Apex Forge, shaped like Square's documented responses:
     payment links (order or quick_pay + subscription_plan_id), orders (get, update, search),
     payments (get, list), refunds, locations, catalog (subscription plans), subscriptions
-    (search, get, cancel) and customers. Loopback only; never talks to Square."""
+    (search, get, cancel), customers (get, search by email) and invoices (get).
+    UpdateOrder behaves like Square's: the version must match (else VERSION_MISMATCH), an
+    idempotency key reused with the same body replays the first answer and with a different
+    body is refused (IDEMPOTENCY_KEY_REUSED), and metadata holds at most 10 keys of <= 60
+    chars with values of <= 255 chars. fail_paths = {path prefix: status} makes any matching
+    request answer that status (e.g. 500). Loopback only; never talks to Square."""
 
     def __init__(self, page_size=4, refund_status="PENDING", token=None):
         self.orders, self.payments = {}, {}
@@ -114,6 +119,10 @@ class FakeSquare:
                            "country": "US"}]
         self.page_size, self.refund_status, self.token = page_size, refund_status, token
         self.fail_order_put = False
+        self.fail_paths = {}       # path prefix -> HTTP status to answer (5xx tests)
+        self.invoices = {}
+        self.customer_searches = []
+        self._order_put_keys = {}  # idempotency key -> (body json, response)
         self._refund_by_key = {}
         self._n = 0
         fake = self
@@ -146,6 +155,10 @@ class FakeSquare:
                 if fake.token and self.headers.get("Authorization") != "Bearer " + fake.token:
                     self._send(401, {"errors": [{"category": "AUTHENTICATION_ERROR", "code": "UNAUTHORIZED"}]})
                     return False
+                for prefix, status in fake.fail_paths.items():
+                    if self.path.startswith(prefix):
+                        self._send(status, {"errors": [{"category": "API_ERROR", "code": "INTERNAL_SERVER_ERROR"}]})
+                        return False
                 return True
 
             def do_GET(self):
@@ -181,6 +194,9 @@ class FakeSquare:
                 if path.startswith("/v2/customers/"):
                     c = fake.customers.get(tail)
                     return self._send(200, {"customer": c}) if c else self._missing()
+                if path.startswith("/v2/invoices/"):
+                    inv = fake.invoices.get(tail)
+                    return self._send(200, {"invoice": inv}) if inv else self._missing()
                 return self._missing()
 
             def do_DELETE(self):
@@ -203,13 +219,30 @@ class FakeSquare:
                         return self._missing()
                     if fake.fail_order_put:
                         return self._bad("BAD_REQUEST", "order can't be updated")
+                    key = body.get("idempotency_key") or ""
+                    raw = json.dumps(body, sort_keys=True)
+                    if key and key in fake._order_put_keys:
+                        seen_raw, resp = fake._order_put_keys[key]
+                        if seen_raw != raw:
+                            return self._bad("IDEMPOTENCY_KEY_REUSED")
+                        return self._send(200, resp)
                     upd = body.get("order") or {}
                     if upd.get("version") != o["version"]:
                         return self._bad("VERSION_MISMATCH")
+                    meta = dict(o.get("metadata") or {})
+                    meta.update(upd.get("metadata") or {})
+                    if len(meta) > 10 or any(len(k) > 60 or not all(c.isalnum() or c in "_-" for c in k)
+                                             or not isinstance(v, str) or len(v) > 255
+                                             for k, v in meta.items()):
+                        return self._bad("INVALID_VALUE", "metadata")
                     fake.order_puts.append((oid, body))
-                    o.setdefault("metadata", {}).update(upd.get("metadata") or {})
+                    o["metadata"] = meta
                     o["version"] += 1
-                    return self._send(200, {"order": o})
+                    o["updated_at"] = _iso(__import__("time").time())
+                    resp = {"order": json.loads(json.dumps(o))}
+                    if key:
+                        fake._order_put_keys[key] = (raw, resp)
+                    return self._send(200, resp)
                 return self._missing()
 
             def do_POST(self):
@@ -245,6 +278,11 @@ class FakeSquare:
                         {"id": "act-" + sid, "type": "CANCEL", "effective_date": s["canceled_date"]}]})
                 if path == "/v2/catalog/object":
                     return self._catalog(body)
+                if path == "/v2/customers/search":
+                    fake.customer_searches.append(body)
+                    exact = ((((body.get("query") or {}).get("filter") or {}).get("email_address")) or {}).get("exact")
+                    rows = [c for c in fake.customers.values() if exact and c.get("email_address") == exact]
+                    return self._send(200, _page(rows, "customers", body.get("cursor") or "0", fake.page_size))
                 if path == "/v2/refunds":
                     return self._refund(body)
                 return self._missing()
@@ -272,8 +310,8 @@ class FakeSquare:
                     o = {"location_id": qp["location_id"],
                          "line_items": [{"name": qp["name"], "quantity": "1",
                                          "base_price_money": qp["price_money"]}]}
-                o.update(id=oid, version=1, state="DRAFT",
-                         created_at=_iso(__import__("time").time()))
+                now_iso = _iso(__import__("time").time())
+                o.update(id=oid, version=1, state="DRAFT", created_at=now_iso, updated_at=now_iso)
                 fake.orders[oid] = o
                 if plan_id:
                     fake.link_plans[oid] = plan_id
@@ -291,7 +329,13 @@ class FakeSquare:
                     d = obj.get("subscription_plan_variation_data") or {}
                     if (fake.catalog.get(d.get("subscription_plan_id")) or {}).get("type") != "SUBSCRIPTION_PLAN":
                         return self._bad("INVALID_VALUE", "subscription_plan_id")
-                    for ph in d.get("phases") or []:
+                    phases = d.get("phases") or []
+                    if [ph.get("ordinal") for ph in phases] != list(range(len(phases))):
+                        return self._bad("INVALID_VALUE", "phase ordinals must count from 0")
+                    for ph in phases[:-1]:
+                        if not ph.get("periods"):
+                            return self._bad("INVALID_VALUE", "subscription phase requires period unless it is last phase")
+                    for ph in phases:
                         pr = ph.get("pricing") or {}
                         if "recurring_price_money" in ph:
                             return self._bad("INVALID_VALUE", "phase pricing must be set on the pricing field")
@@ -355,7 +399,8 @@ class FakeSquare:
             meta["apex_report_delivered"] = "1"
         ts = time.time() - 60 if created is None else created
         self.orders[order_id] = {"id": order_id, "location_id": location, "metadata": meta,
-                                 "version": 3, "state": "OPEN", "created_at": _iso(ts - 30)}
+                                 "version": 3, "state": "OPEN", "created_at": _iso(ts - 30),
+                                 "updated_at": _iso(ts - 30)}
         if customer_id:
             self.orders[order_id]["customer_id"] = customer_id
         if paid is not None:
@@ -386,17 +431,47 @@ class FakeSquare:
         o["tenders"] = [{"id": "T" + pid, "payment_id": pid, "type": "CARD"}]
         if paid:
             o["state"] = "COMPLETED"
+            o["closed_at"] = o["updated_at"] = _iso(ts)
         return pid
+
+    def bump_version(self, order_id):
+        """Someone else (Square, another worker) wrote the order since we read it."""
+        self.orders[order_id]["version"] += 1
+
+    def add_invoice(self, sub_id, *, status="PAID", amount=2900, created=None, customer_id=None,
+                    location=LOC, subscription_id=None, paid=True, invoice_id=None):
+        """A subscription billing invoice as Square leaves it: its own order, paid by a payment
+        on that order, and its id put first in the subscription's invoice_ids (newest first)."""
+        import time
+        s = self.subscriptions[sub_id]
+        self._n += 1
+        inv_id = invoice_id or "inv:0-ChFAKE%014d" % self._n
+        inv_order = "ORDINV%020d" % self._n
+        ts = time.time() - 60 if created is None else created
+        cust = customer_id or s["customer_id"]
+        self.orders[inv_order] = {"id": inv_order, "location_id": location, "metadata": {}, "version": 1,
+                                  "state": "OPEN", "created_at": _iso(ts), "updated_at": _iso(ts),
+                                  "customer_id": cust}
+        if paid:
+            self.pay(inv_order, created=ts, amount=amount, customer_id=cust, email="")
+        self.invoices[inv_id] = {"id": inv_id, "location_id": location, "order_id": inv_order, "status": status,
+                                 "subscription_id": subscription_id or sub_id, "created_at": _iso(ts),
+                                 "primary_recipient": {"customer_id": cust}, "version": 1}
+        s.setdefault("invoice_ids", []).insert(0, inv_id)
+        return inv_id
 
     def add_customer(self, customer_id, email=None):
         self.customers[customer_id] = {"id": customer_id, **({"email_address": email} if email else {})}
         return customer_id
 
     def subscribe(self, sub_id, customer_id, *, variation, location=LOC, status="ACTIVE", created=None,
-                  start_date="2026-10-01", charged_through_date="2026-12-01", canceled_date=None,
+                  start_date="2026-10-01", charged_through_date=None, canceled_date=None,
                   price_override=None):
-        """A subscription as Square's payment-link checkout leaves it (it names no order)."""
+        """A subscription as Square's payment-link checkout leaves it (it names no order).
+        charged_through_date defaults to 20 days from today (a paid-up subscription)."""
         import time
+        if charged_through_date is None:
+            charged_through_date = time.strftime("%Y-%m-%d", time.gmtime(time.time() + 20 * 86400))
         s = {"id": sub_id, "location_id": location, "plan_variation_id": variation, "customer_id": customer_id,
              "start_date": start_date, "charged_through_date": charged_through_date, "status": status,
              "created_at": _iso(time.time() if created is None else created), "timezone": "UTC",
@@ -408,8 +483,10 @@ class FakeSquare:
         self.subscriptions[sub_id] = s
         return s
 
-    def add_plan_variation(self, cents=1900, cadence="MONTHLY"):
-        """A SUBSCRIPTION_PLAN + one STATIC variation straight in the catalog; returns the variation id."""
+    def add_plan_variation(self, cents=2900, cadence="MONTHLY", first_cents=2900, phases=1):
+        """A SUBSCRIPTION_PLAN + its STATIC variation straight in the catalog; returns the variation id.
+        phases=1 (the default): one never-ending phase at cents.
+        phases=2: an intro first month at first_cents (periods 1), then cents every month."""
         self._n += 1
         plan_id, var_id = "CATPLAN%017d" % self._n, "CATVAR%018d" % self._n
         self.catalog[plan_id] = {"id": plan_id, "type": "SUBSCRIPTION_PLAN", "is_deleted": False,
@@ -417,9 +494,20 @@ class FakeSquare:
         self.catalog[var_id] = {"id": var_id, "type": "SUBSCRIPTION_PLAN_VARIATION", "is_deleted": False,
                                 "subscription_plan_variation_data": {
                                     "name": "Monthly", "subscription_plan_id": plan_id,
-                                    "phases": [{"uid": "PH1", "cadence": cadence, "ordinal": 0, "pricing": {
-                                        "type": "STATIC", "price_money": {"amount": cents, "currency": "USD"}}}]}}
+                                    "phases": _phases(cents, cadence, first_cents, phases)}}
         return var_id
+
+
+def _phases(cents, cadence, first_cents, n):
+    def ph(uid, ordinal, amount, periods=None):
+        p = {"uid": uid, "cadence": cadence, "ordinal": ordinal,
+             "pricing": {"type": "STATIC", "price_money": {"amount": amount, "currency": "USD"}}}
+        if periods:
+            p["periods"] = periods
+        return p
+    if n == 1:
+        return [ph("PH1", 0, cents)]
+    return [ph("PH1", 0, first_cents, periods=1), ph("PH2", 1, cents)]
 
 
 def _iso(ts):
