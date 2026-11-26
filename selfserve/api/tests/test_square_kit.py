@@ -49,7 +49,7 @@ def sq(monkeypatch):
 
 @pytest.fixture
 def var(sq, monkeypatch):
-    v = sq.add_plan_variation(1900)
+    v = sq.add_plan_variation()                    # one phase, $29 a month (the default)
     monkeypatch.setenv("SQUARE_MONITOR_PLAN_VARIATION_ID", v)
     return v
 
@@ -63,7 +63,7 @@ def test_plans_table_and_prices(sq, monkeypatch):
                                         "available": True}
     assert pay.plan_info("pro")["cents"] == 7900 and pay.plan_info("pro")["mode"] == "pro"
     m = pay.plan_info("monitor")
-    assert m["cents"] == 1900 and m["first_cents"] == 2900                   # $29 first month, then $19
+    assert m["cents"] == 2900 and m["first_cents"] == 2900          # $29 a month: never undercuts the Checkup
     assert m["kind"] == "subscription" and m["mode"] == "full" and not m["available"]
     for bad in ("", "PRO", "enterprise", None, 7, ["pro"]):
         assert pay.plan_info(bad) is None
@@ -71,7 +71,7 @@ def test_plans_table_and_prices(sq, monkeypatch):
     monkeypatch.setenv("MONITOR_PRICE_CENTS", "abc")        # unusable -> default
     monkeypatch.setenv("CHECKUP_PRICE_CENTS", "5")           # out of range -> default
     assert pay.plan_info("pro")["cents"] == 9900
-    assert pay.plan_info("monitor")["cents"] == 1900 and pay.price_cents() == 2900
+    assert pay.plan_info("monitor")["cents"] == 2900 and pay.price_cents() == 2900
     monkeypatch.setenv("MONITOR_FIRST_CENTS", "3900")
     assert pay.plan_info("monitor")["first_cents"] == 3900 and pay.plan_info("pro")["first_cents"] == 9900
 
@@ -80,7 +80,7 @@ def test_public_plans_shape_and_monitor_switch(sq, monkeypatch):
     rows = pay.public_plans()
     assert [r["id"] for r in rows] == ["checkup", "pro", "monitor"]
     assert all(set(r) == {"id", "label", "cents", "first_cents", "kind", "available"} for r in rows)
-    assert (rows[2]["first_cents"], rows[2]["cents"]) == (2900, 1900)
+    assert (rows[2]["first_cents"], rows[2]["cents"]) == (2900, 2900)
     assert [r["available"] for r in rows] == [True, True, False]
     monkeypatch.setenv("SQUARE_MONITOR_PLAN_VARIATION_ID", "not an id!")
     assert not pay.plan_info("monitor")["available"]
@@ -153,7 +153,7 @@ def test_price_check_uses_each_plans_price(sq, var):
     sq.add(oid("PROLOW"), SITE, plan="pro", amount=2900)
     sq.add(oid("PROOK"), SITE, plan="pro", amount=7900, customer_id="CUST000001")
     sq.add(oid("MONOK"), SITE, plan="monitor", amount=2900)
-    sq.add(oid("MONLOW"), SITE, plan="monitor", amount=1900)      # the monthly price, but not the first month
+    sq.add(oid("MONLOW"), SITE, plan="monitor", amount=1900)      # less than the first month
     sq.add(oid("OLDCHK"), SITE, amount=2900)                          # no plan field
     sq.add(oid("WEIRD"), SITE, plan="platinum", amount=99900)
     with pytest.raises(pay.PaymentError):
@@ -318,7 +318,7 @@ def test_sales_summary_math(sq, var):
                             "pro": {"count": 2, "gross_cents": 15800},
                             "monitor": {"count": 1, "gross_cents": 1900}}
     assert s["active_subscriptions"] == 2 and s["cancelling"] == 1   # the one scheduled to end isn't "active"
-    assert s["mrr_cents"] == 1900 + 1500                    # catalog's monthly price + an override
+    assert s["mrr_cents"] == 2900 + 1500                    # catalog's monthly price + an override
     assert s["truncated"] is False
     assert [r["site"] for r in s["recent"]] == ["alpha.example", "beta.example", "gamma.example", "delta.example"]
     assert s["recent"][0] == {"created": sq.payments["PAY" + oid("S1")[-20:]]["created_at"], "plan": "checkup",
@@ -378,7 +378,7 @@ def test_cli_doctor_all_good(sq, var, monkeypatch):
     assert code == 0, out
     assert "FAIL" not in out and "All good." in out
     assert "location found: Apex Forge Test" in out
-    assert "Monthly Monitoring plan found: $29.00 for the first month, then $19.00 a month" in out
+    assert "Monthly Monitoring plan found: $29.00 a month" in out and "WARN Square's checkout" not in out
     assert TOKEN not in out and SIG_KEY not in out and var not in out and LOC not in out
     assert any(h[0] == "Bearer " + TOKEN for h in sq.headers_seen)
 
@@ -389,8 +389,7 @@ def test_cli_doctor_finds_problems(sq, monkeypatch):
     assert "WARN SQUARE_WEBHOOK_SIGNATURE_KEY is not set" in out
     monkeypatch.setenv("SQUARE_MONITOR_PLAN_VARIATION_ID", sq.add_plan_variation(2500))
     code, out = run_cli("doctor")
-    assert code == 1 and "FAIL the plan variation charges 2500 cents a month after the first but " \
-                         "MONITOR_PRICE_CENTS is 1900" in out
+    assert code == 1 and "FAIL the plan variation charges 2500 cents a month but MONITOR_PRICE_CENTS is 2900" in out
     monkeypatch.setenv("SQUARE_MONITOR_PLAN_VARIATION_ID", "CATVARNOPE00000000000001")
     code, out = run_cli("doctor")
     assert code == 1 and "is not a subscription plan variation" in out
@@ -414,7 +413,7 @@ def test_cli_doctor_square_down(sq, monkeypatch):
 def test_cli_plans(sq, var, monkeypatch):
     code, out = run_cli("plans")
     assert code == 0
-    assert "checkup  $29.00" in out and "pro      $79.00" in out and "$19.00 a month" in out
+    assert "checkup  $29.00" in out and "pro      $79.00" in out and "monitor  $29.00 a month" in out
     assert "hidden" not in out and var not in out
     monkeypatch.delenv("SQUARE_MONITOR_PLAN_VARIATION_ID")
     assert "hidden" in run_cli("plans")[1]
@@ -438,13 +437,10 @@ def test_cli_create_monitor_plan_sandbox(sq):
     assert plan_body["object"]["type"] == "SUBSCRIPTION_PLAN" and plan_body["object"]["id"].startswith("#")
     d = var_body["object"]["subscription_plan_variation_data"]
     assert sq.catalog[d["subscription_plan_id"]]["type"] == "SUBSCRIPTION_PLAN"
-    assert d["phases"] == [
-        {"cadence": "MONTHLY", "ordinal": 0, "periods": 1,
-         "pricing": {"type": "STATIC", "price_money": {"amount": 2900, "currency": "USD"}}},
-        {"cadence": "MONTHLY", "ordinal": 1,
-         "pricing": {"type": "STATIC", "price_money": {"amount": 1900, "currency": "USD"}}}]
+    assert d["phases"] == [{"cadence": "MONTHLY", "ordinal": 0,                     # one open-ended phase
+                            "pricing": {"type": "STATIC", "price_money": {"amount": 2900, "currency": "USD"}}}]
     assert plan_body["idempotency_key"] != var_body["idempotency_key"]
-    assert TOKEN not in out and "sandbox" in out and "$29.00 for the first month, then $19.00 a month" in out
+    assert TOKEN not in out and "sandbox" in out and "$29.00 a month" in out and "first month" not in out
 
 
 def test_cli_create_monitor_plan_refusals(sq, monkeypatch):
@@ -467,12 +463,30 @@ def test_cli_create_monitor_plan_refusals(sq, monkeypatch):
 
 
 def test_cli_create_monitor_plan_custom_price_and_force(sq, monkeypatch):
-    monkeypatch.setenv("MONITOR_PRICE_CENTS", "2400")
+    monkeypatch.setenv("MONITOR_PRICE_CENTS", "3400")
+    monkeypatch.setenv("MONITOR_FIRST_CENTS", "3400")
     monkeypatch.setenv("SQUARE_MONITOR_PLAN_VARIATION_ID", "CATVAROLD000000000000001")
     code, out = run_cli("create-monitor-plan", "--force")
-    assert code == 0 and "$24.00 a month" in out
+    assert code == 0 and "$34.00 a month" in out
     phases = sq.catalog_upserts[-1]["object"]["subscription_plan_variation_data"]["phases"]
-    assert [p["pricing"]["price_money"]["amount"] for p in phases] == [2900, 2400]
+    assert [(p["pricing"]["price_money"]["amount"], p.get("periods")) for p in phases] == [(3400, None)]
+
+
+def test_cli_create_monitor_plan_intro_price_makes_two_phases(sq, monkeypatch):
+    monkeypatch.setenv("MONITOR_PRICE_CENTS", "1900")              # optional intro price: $29, then $19
+    code, out = run_cli("create-monitor-plan")
+    assert code == 0 and "$29.00 for the first month, then $19.00 a month" in out
+    d = sq.catalog_upserts[-1]["object"]["subscription_plan_variation_data"]
+    assert d["phases"] == [
+        {"cadence": "MONTHLY", "ordinal": 0, "periods": 1,
+         "pricing": {"type": "STATIC", "price_money": {"amount": 2900, "currency": "USD"}}},
+        {"cadence": "MONTHLY", "ordinal": 1,
+         "pricing": {"type": "STATIC", "price_money": {"amount": 1900, "currency": "USD"}}}]
+    monkeypatch.setenv("SQUARE_MONITOR_PLAN_VARIATION_ID", out.strip().splitlines()[-1])
+    code, out = run_cli("doctor")
+    assert code == 0, out
+    assert "WARN Square's checkout documents only one paid phase, so test month two in sandbox" in out
+    assert "OK   Monthly Monitoring plan found: $29.00 for the first month, then $19.00 a month" in out
 
 
 def test_cli_runs_as_a_script_without_secrets_in_output(sq, var):
@@ -723,23 +737,29 @@ def test_monitored_sites_skip_refunded_and_short_paid_orders(sq, var):
 
 
 def test_doctor_checks_both_phase_prices(sq, monkeypatch):
-    monkeypatch.setenv("SQUARE_MONITOR_PLAN_VARIATION_ID", sq.add_plan_variation(1900, first_cents=2500))
+    monkeypatch.setenv("MONITOR_PRICE_CENTS", "1900")              # intro price set: two phases expected
+    monkeypatch.setenv("SQUARE_MONITOR_PLAN_VARIATION_ID", sq.add_plan_variation(1900, first_cents=2500, phases=2))
     code, out = run_cli("doctor")
     assert code == 1 and "FAIL the plan variation charges 2500 cents for the first month but " \
                          "MONITOR_FIRST_CENTS is 2900" in out
+    assert "WARN Square's checkout documents only one paid phase" in out
     monkeypatch.setenv("MONITOR_FIRST_CENTS", "2500")
     code, out = run_cli("doctor")
     assert code == 0 and "$25.00 for the first month, then $19.00 a month" in out
     assert "WARN the first month of monitoring costs less than a Website Checkup" in out
     monkeypatch.delenv("MONITOR_FIRST_CENTS")
-    monkeypatch.setenv("SQUARE_MONITOR_PLAN_VARIATION_ID", sq.add_plan_variation(1900, phases=1))   # older plan
+    monkeypatch.setenv("SQUARE_MONITOR_PLAN_VARIATION_ID", sq.add_plan_variation(1900, phases=1))
+    code, out = run_cli("doctor")                                  # one phase, but env asks for an intro price
+    assert code == 1 and "isn't the two-phase plan your settings ask for" in out and "create-monitor-plan --force" in out
+    monkeypatch.delenv("MONITOR_PRICE_CENTS")                      # one price again ($29), but a two-phase plan
+    monkeypatch.setenv("SQUARE_MONITOR_PLAN_VARIATION_ID", sq.add_plan_variation(1900, phases=2))
     code, out = run_cli("doctor")
-    assert code == 1 and "isn't this version's two-phase plan" in out and "create-monitor-plan --force" in out
+    assert code == 1 and "isn't one plain monthly price of $29.00" in out and "create-monitor-plan --force" in out
 
 
 def test_fake_catalog_refuses_an_open_ended_first_phase(sq):
     """Square: 'subscription phase requires period unless it is last phase'."""
-    plan = pay.create_monitor_plan()
+    plan = pay.create_monitor_plan(cents=1900)
     assert plan["first_cents"] == 2900 and plan["cents"] == 1900
     def ph(ordinal, cents):
         return {"cadence": "MONTHLY", "ordinal": ordinal,
@@ -767,7 +787,7 @@ def _fallback_world(sq, var, *, invoice_status="PAID", amount=2900, sub_kw=None,
     if invoice:
         sq.add_invoice(sub["id"], status=invoice_status, amount=amount, created=t0 + 31,
                        subscription_id=subscription_id)
-        sq.add_invoice(sub["id"], status="UNPAID", amount=1900, created=t0 + 31 * DAY)    # a later month
+        sq.add_invoice(sub["id"], status="UNPAID", amount=2900, created=t0 + 31 * DAY)    # a later month
     return oid("NOPAYLINK"), cust
 
 
@@ -796,10 +816,15 @@ def test_invoice_fallback_refuses_anything_doubtful(sq, var, case):
 
 
 def test_mrr_uses_the_plans_real_price_not_env(sq, var, monkeypatch):
-    monkeypatch.setenv("MONITOR_PRICE_CENTS", "2400")               # env says $24, Square's plan says $19
+    monkeypatch.setenv("MONITOR_PRICE_CENTS", "2400")               # env says $24, Square's plan says $29
     sq.subscribe("sub-mrr-000001", "CUSTMRR000001", variation=var)
     sq.subscribe("sub-mrr-000002", "CUSTMRR000002", variation=var, price_override=1200)
-    assert pay.sales_summary()["mrr_cents"] == 1900 + 1200
+    assert pay.sales_summary()["mrr_cents"] == 2900 + 1200
+    var2 = sq.add_plan_variation(1900, phases=2)                    # intro plan: renews at its last phase
+    monkeypatch.setenv("SQUARE_MONITOR_PLAN_VARIATION_ID", var2)
+    sq.subscribe("sub-mrr-000003", "CUSTMRR000003", variation=var2)
+    assert pay.sales_summary()["mrr_cents"] == 1900
+    monkeypatch.setenv("SQUARE_MONITOR_PLAN_VARIATION_ID", var)
     sq.catalog[var]["subscription_plan_variation_data"]["phases"] = []
     with pytest.raises(pay.SquareUnavailable, match="price"):
         pay.sales_summary()

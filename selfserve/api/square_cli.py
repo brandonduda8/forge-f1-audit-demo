@@ -7,8 +7,8 @@ Run it on your own computer with the server's settings exported in the terminal
   python selfserve/api/square_cli.py plans                  the plans and prices the site offers
   python selfserve/api/square_cli.py sales [--days N]       sales from Square for the last N days (default 30)
   python selfserve/api/square_cli.py create-monitor-plan    make the monitoring plan in Square's catalog
-                                                            (first month MONITOR_FIRST_CENTS, then
-                                                            MONITOR_PRICE_CENTS every month)
+                                                            (MONITOR_PRICE_CENTS a month; a first-month
+                                                            intro price only if MONITOR_FIRST_CENTS differs)
         [--production]                                      (needed, plus typing yes, when SQUARE_ENV=production)
         [--force]                                           (make another even if one is already set)
 
@@ -28,6 +28,8 @@ def _money(c):
 
 
 def _monitor_price(first, monthly):
+    if first == monthly:
+        return f"{_money(monthly)} a month"
     return f"{_money(first)} for the first month, then {_money(monthly)} a month"
 
 
