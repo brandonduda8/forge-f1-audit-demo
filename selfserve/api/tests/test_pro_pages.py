@@ -236,8 +236,10 @@ def test_broken_redirecting_offsite_nonhtml_and_bot_check_pages():
     assert ids(p) == {"status"} and [n["id"] for n in p["not_measured"]] == ALL_IDS[1:]
     p = _page("%PDF-1.4", headers={"Content-Type": "application/pdf"})
     assert p["issues"] == [] and p["passed"] == 1 and "application/pdf" in p["not_measured"][0]["reason"]
+    # a bot-check page is the site refusing our checker: the whole page is not measured, never passed
     p = _page("<html><title>Just a moment...</title></html>")
-    assert p["issues"] == [] and p["passed"] == 1 and "bot-check" in p["not_measured"][0]["reason"]
+    assert p["issues"] == [] and p["passed"] == 0 and [n["id"] for n in p["not_measured"]] == ALL_IDS
+    assert all("refused our checker" in n["reason"] and "bot-check" in n["reason"] for n in p["not_measured"])
 
 
 # ---------------------------------------------------------------- budget and robots in a real fetch
@@ -251,7 +253,8 @@ def test_pages_step_fetches_only_allowed_pages(pro_site, monkeypatch):
     st = f1_pages.check_pages(c, base + "/", home, UA)
     pages = by_path(st["pages"])
     assert list(pages) == ["/about.html", "/services.html", "/pricing.html", "/gallery"]
-    assert c.count == 2 + 4                      # robots.txt, sitemap.xml, four pages
+    # robots.txt, sitemap.xml, four pages, and /gallery's redirect to /gallery/ as its own counted hop
+    assert c.count == 2 + 4 + 1
     got = [p for _m, p in srv.seen]
     assert got[:2] == ["/robots.txt", "/sitemap.xml"]
     assert not any(p.startswith("/locations") or p.endswith(".pdf") or "?" in p for p in got)
@@ -302,7 +305,7 @@ def test_cached_responses_are_reused(pro_site, monkeypatch):
              (base + "/robots.txt", base + "/sitemap.xml", base + "/about.html")}
     c = netguard.GuardedRequests(150, 60)
     st = f1_pages.check_pages(c, base + "/", home, UA, cache=cache)
-    assert c.count == 3 and len(st["pages"]) == 4      # only services, pricing and gallery fetched
+    assert c.count == 4 and len(st["pages"]) == 4      # only services, pricing and gallery (+ its redirect)
 
 
 class _RobotsDown(helpers._Quiet):
@@ -469,3 +472,188 @@ def test_pro_markdown_renders_to_pdf(pro_site, tmp_path):
                         str(src), str(out)], capture_output=True, text=True, timeout=120)
     assert p.returncode == 0, p.stderr
     assert out.stat().st_size > 5000
+
+
+# ---------------------------------------------------------------- review fixes: malformed URLs, refusals, robots
+
+class _EdgeSite(helpers._Quiet):
+    """The pro-edge-site fixture plus answers a static server can't give."""
+    STATUS = {"/members": 403, "/login-only": 401, "/busy": 429, "/oops": 500, "/down": 503, "/gone": 410}
+    REDIRECT = {"/old-services": "/private/services.html", "/to-elsewhere": "https://elsewhere.example/",
+                "/bad-redirect": "http://[x/", "/hop": "/about.html"}
+
+    def _send(self, status, body=b"", headers=()):
+        self.send_response(status)
+        for k, v in headers:
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path in self.STATUS:
+            self._seen()
+            st = self.STATUS[path]
+            return self._send(st, b"<html><head><title>Error %d</title></head><body>no</body></html>" % st,
+                              [("Content-Type", "text/html")])
+        if path in self.REDIRECT:
+            self._seen()
+            return self._send(301, headers=[("Location", self.REDIRECT[path])])
+        if path == "/check":
+            self._seen()
+            return self._send(200, b"<html><head><title>Attention Required! | Cloudflare</title></head>"
+                                   b"<body>verify you are human</body></html>", [("Content-Type", "text/html")])
+        return super().do_GET()
+
+
+@pytest.fixture
+def edge_site(tmp_path):
+    d = _copy_site(tmp_path, "pro-edge-site")
+    srv, base = serve(partial(_EdgeSite, directory=d))
+    _write_sitemap(d, base)
+    yield srv, base, d
+    srv.shutdown()
+
+
+def _seen_paths(srv):
+    from urllib.parse import unquote
+    return [unquote(p) for _m, p in srv.seen]
+
+
+def test_malformed_urls_are_skipped_not_fatal():
+    origin = f1_pages._origin("https://shop.example/")
+    assert f1_pages._origin("http://[x/") is None
+    for bad in ("http://[x/", "http://[::1/a", "http://a]b/"):
+        assert f1_pages._candidate(bad, "https://shop.example/", origin) is None
+    got = f1_pages.choose_pages("https://shop.example/", [("http://[x/", "nav"), ("/about", "nav")],
+                                ["http://[y/", "https://shop.example/menu"])
+    assert got == ["https://shop.example/about", "https://shop.example/menu"]
+    # a malformed canonical link is a (minor) problem on the page, not a crash
+    p = _page(GOOD.replace('href="https://shop.example/about"', 'href="http://[x/"'))
+    assert [(i["id"], i["severity"]) for i in p["issues"]] == [("canonical", "MINOR")]
+    assert "not a valid" in p["issues"][0]["title"]
+
+
+@pytest.mark.parametrize("status", [401, 403, 429, 500, 502, 503])
+def test_refused_pages_are_not_measured_never_broken(status):
+    p = _page("<html><title>Forbidden</title></html>", status=status)
+    assert p["issues"] == [] and p["passed"] == 0
+    assert [n["id"] for n in p["not_measured"]] == ALL_IDS
+    assert all("refused our checker" in n["reason"] and str(status) in n["reason"] for n in p["not_measured"])
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_missing_pages_stay_broken(status):
+    p = _page("<html><title>Not here</title></html>", status=status)
+    assert [(i["id"], i["severity"]) for i in p["issues"]] == [("status", "CRITICAL")]
+    assert str(status) in p["issues"][0]["title"]
+
+
+def test_robots_paths_are_normalized_before_matching():
+    n = f1_pages.norm_path
+    assert n("/café") == n("/caf%c3%a9") == n("/caf%C3%A9") == "/caf%C3%A9"
+    assert n("/%7Eme") == n("/~me") == "/~me"                      # unreserved: decoded
+    assert n("/a%2Fb") == "/a%2Fb" and n("/a b") == "/a%20b" and n("/100%") == "/100%25"
+    assert n(n("/café/x y%zz")) == n("/café/x y%zz")              # idempotent
+    ok = f1_pages.robots_allowed
+    encoded = f1_pages.parse_robots("User-agent: *\nDisallow: /caf%C3%A9\nDisallow: /~private/\n")
+    for path in ("/café.html", "/caf%c3%a9.html", "/caf%C3%A9.html"):
+        assert not ok(encoded, path)
+    assert not ok(encoded, "/%7Eprivate/x") and ok(encoded, "/cafe.html")
+    raw = f1_pages.parse_robots("User-agent: *\nDisallow: /café\nAllow: /café/menu$\n")
+    assert not ok(raw, "/caf%C3%A9/drinks") and ok(raw, "/caf%c3%a9/menu") and ok(raw, "/caf")
+
+
+def test_cached_redirect_to_disallowed_page_is_not_analysed():
+    rules = f1_pages.parse_robots("User-agent: *\nDisallow: /private/\n")
+    origin = f1_pages._origin("https://shop.example/")
+    cache = {"https://shop.example/team": Resp(GOOD, url="https://shop.example/private/team", history=[1])}
+    r, why, budget = f1_pages.fetch_page(None, "https://shop.example/team", cache, UA, rules, origin)
+    assert r is None and why == f1_pages.R_ROBOTS_FINAL and not budget
+
+
+def test_edge_pages_refusals_redirects_and_robots(edge_site, monkeypatch):
+    srv, base, _d = edge_site
+    _guard(monkeypatch)
+    home = _home(base)
+    assert f1_pages.choose_pages(base + "/", f1_pages.homepage_links(BeautifulSoup(home.text, "lxml")), [],
+                                 f1_pages.parse_robots(open(os.path.join(_d, "robots.txt")).read()))
+    targets = ["/about.html", "/café.html", "/old-services", "/members", "/login-only", "/busy", "/oops",
+               "/down", "/gone", "/missing", "/check", "/to-elsewhere", "/bad-redirect", "/hop"]
+    monkeypatch.setattr(f1_pages, "choose_pages",
+                        lambda *a, **k: [base + t for t in targets if t != "/café.html"])
+    del srv.seen[:]
+    c = netguard.GuardedRequests(150, 60)
+    st = f1_pages.check_pages(c, base + "/", home, UA, max_pages=len(targets))
+    pages = by_path(st["pages"])
+    seen = _seen_paths(srv)
+    # robots: the redirect to /private/ is not followed; the disallowed page itself is never requested
+    assert not any(p.startswith("/private") or p.startswith("/café") for p in seen)
+    assert all(n["reason"] == f1_pages.R_ROBOTS_FINAL for n in pages["/old-services"]["not_measured"])
+    assert pages["/old-services"]["issues"] == [] and pages["/old-services"]["passed"] == 0
+    # refused = not measured; gone/missing = broken
+    for path, code in (("/members", 403), ("/login-only", 401), ("/busy", 429), ("/oops", 500), ("/down", 503)):
+        p = pages[path]
+        assert p["issues"] == [] and p["passed"] == 0 and [n["id"] for n in p["not_measured"]] == ALL_IDS
+        assert "refused our checker" in p["not_measured"][0]["reason"] and str(code) in p["not_measured"][0]["reason"]
+    for path, code in (("/gone", 410), ("/missing", 404)):
+        assert ids(pages[path]) == {"status"} and str(code) in pages[path]["issues"][0]["title"]
+    chk = pages["/check"]
+    assert chk["issues"] == [] and chk["passed"] == 0 and "bot-check" in chk["not_measured"][0]["reason"]
+    # an off-site redirect is reported but the other site is never fetched; a malformed Location is not followed
+    assert ids(pages["/to-elsewhere"]) == {"status"} and [n["id"] for n in pages["/to-elsewhere"]["not_measured"]] \
+        == ALL_IDS[1:]
+    assert all(n["reason"] == f1_pages.R_BAD_REDIRECT for n in pages["/bad-redirect"]["not_measured"])
+    # a same-site redirect is followed hop by hop, every hop counted
+    assert ids(pages["/hop"]) == {"status", "canonical"} and seen.count("/about.html") == 2
+    assert c.count == len(seen)
+    # the malformed canonical on /about.html is a page problem, not a crash
+    assert "not a valid" in [i for i in pages["/about.html"]["issues"] if i["id"] == "canonical"][0]["title"]
+
+
+def test_pro_run_with_malformed_links_and_sitemap_is_delivered(edge_site):
+    srv, base, _d = edge_site
+    full = run_runner("full", base + "/")
+    assert full["ok"] and full["report"]["findings"] is not None and "pages" not in full["report"]
+    del srv.seen[:]
+    pro = run_runner("pro", base + "/")
+    assert pro["ok"] and (pro["score"], pro["grade"]) == (full["score"], full["grade"])
+    # /café.html is disallowed (Disallow: /caf%C3%A9) so never chosen; the homepage crawl already followed
+    # /old-services to /private/, so that cached page is not analysed; /members answers 403
+    pages = by_path(pro["report"]["pages"])
+    assert list(pages) == ["/about.html", "/old-services", "/members"]
+    assert ids(pages["/about.html"]) == {"canonical"}
+    assert all(n["reason"] == f1_pages.R_ROBOTS_FINAL for n in pages["/old-services"]["not_measured"])
+    assert pages["/members"]["issues"] == [] and "403" in pages["/members"]["not_measured"][0]["reason"]
+    assert run_runner("light", base + "/")["ok"]
+
+
+def test_utf8_links_read_right_without_a_charset_header():
+    html = '<html><head><meta charset="utf-8"><title>Caf\u00e9</title></head><body><a href="/caf\u00e9">x</a></body></html>'
+    r = Resp(html.encode("utf-8").decode("latin-1"), headers={"Content-Type": "text/html"})
+    r.content = html.encode("utf-8")                 # what requests gives with no charset: Latin-1 text
+    assert f1_pages.homepage_links(f1_pages.page_soup(r)) == [("/caf\u00e9", "page")]
+    r.headers["Content-Type"] = "text/html; charset=utf-8"
+    r.text = html
+    assert f1_pages.page_soup(r).title.get_text() == "Caf\u00e9"
+
+
+def test_any_error_in_the_pages_step_still_delivers_the_homepage_report(pro_site):
+    _srv, base, _d = pro_site
+    code = ("import sys; sys.path.insert(0, %r); import runner, f1_pages\n"
+            "def boom(*a, **k):\n"
+            "    st = k['state']; st['selected'] = [%r]; raise RuntimeError('unexpected')\n"
+            "f1_pages.check_pages = boom\n"
+            "sys.exit(runner.main(['runner.py', 'pro', %r]))\n") % (API, base + "/about.html", base + "/")
+    env = {"PATH": os.environ["PATH"], "HTTPS_PROXY": "http://10.9.9.9:1", "HTTP_PROXY": "http://10.9.9.9:1",
+           "SELFSERVE_TEST_ALLOW_LOOPBACK": "1"}
+    p = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=180, env=env)
+    assert p.returncode == 0, p.stderr
+    res = json.loads(p.stdout.strip().splitlines()[-1])
+    assert res["ok"] and res["grade"] and res["report"]["findings"] is not None
+    assert [x["path"] for x in res["report"]["pages"]] == ["/about.html"]
+    pg = res["report"]["pages"][0]
+    assert pg["issues"] == [] and pg["passed"] == 0 and [n["id"] for n in pg["not_measured"]] == ALL_IDS
+    assert all(n["reason"] == runner.R_PAGES_FAILED for n in pg["not_measured"])
+    assert "## PAGES CHECKED" in res["markdown"]

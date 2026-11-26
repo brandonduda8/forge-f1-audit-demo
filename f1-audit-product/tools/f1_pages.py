@@ -17,12 +17,18 @@ without an error or a redirect.
   homepage are reused from `cache` instead of being fetched again.
 * It stops cleanly before the run's request or time budget runs out: a page it
   did not get to is listed with every check "not measured", never failed.
+* robots.txt paths are compared in one normalized, percent-encoded form, and a
+  redirect is followed one hop at a time: an address robots.txt disallows is not
+  requested, and a page that redirects there is "not measured".
+* Only 404 and 410 make a page "broken". Any other error (401, 403, 429, 5xx) or
+  a bot-check page means the site refused our checker: "not measured".
+* A malformed link or sitemap address (e.g. "http://[x/") is skipped, never fatal.
 
 Nothing here touches the grade: these results are reported beside it.
 """
 import re
 import time
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 
@@ -37,6 +43,10 @@ TITLE_MAX = 65
 DESC_MAX = 160
 ROBOTS_MAX_BYTES = 500 * 1024
 MAX_SITEMAP_LOCS = 2000
+MAX_HOPS = 5                         # redirects followed for one extra page, each one a counted request
+BROKEN_STATUS = (404, 410)           # the page is gone; any other error status means the site refused us
+REDIRECT_STATUS = (301, 302, 303, 307, 308)
+UNRESERVED = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
 CHECKS = [
     ("status", "Page loads without an error or redirect"),
@@ -70,6 +80,16 @@ CHALLENGE_RE = re.compile(r"(just a moment|attention required|access denied|chec
 LOC_RE = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>", re.I)
 
 R_BUDGET = "the run reached its time or request limit before this page was checked"
+R_ROBOTS_FINAL = "the page redirects to an address robots.txt asks us not to visit, so it was not checked"
+R_BAD_REDIRECT = "the page redirects to an address that is not a valid web address, so it was not followed"
+R_HOPS = "the page redirects too many times to follow"
+
+
+def r_refused(status):
+    return f"the site refused our checker (HTTP {status}), so this page was not checked"
+
+
+R_BOT_CHECK = "the site refused our checker: it showed a bot-check page instead of this page"
 
 
 def _clean(s, n=120):
@@ -112,7 +132,22 @@ def robots_sitemaps(text):
             if line.split(":", 1)[0].strip().lower() == "sitemap" and ":" in line]
 
 
+def norm_path(s):
+    """A path in the one form robots.txt matching compares (RFC 9309 2.2.2): characters outside
+    ASCII (as UTF-8) and unsafe ASCII percent-encoded, %xx in upper case, and %xx of an unreserved
+    character decoded. So /caf\u00e9, /caf%c3%a9 and /caf%C3%A9 are the same path, and so are /%7Eme and /~me."""
+    s = quote(s or "", safe="/:@!$&'()*+,;=?#[]%~")
+    s = re.sub(r"%(?![0-9A-Fa-f]{2})", "%25", s)
+
+    def fix(m):
+        h = m.group(1).upper()
+        c = chr(int(h, 16))
+        return c if c in UNRESERVED else "%" + h
+    return re.sub(r"%([0-9A-Fa-f]{2})", fix, s)
+
+
 def _rule_re(pattern):
+    pattern = norm_path(pattern)
     anchored = pattern.endswith("$")
     body = pattern[:-1] if anchored else pattern
     return re.compile(".*".join(re.escape(p) for p in body.split("*")) + ("$" if anchored else ""))
@@ -120,12 +155,13 @@ def _rule_re(pattern):
 
 def robots_allowed(rules, path):
     """Longest matching rule wins; Allow wins a tie; no matching rule means allowed."""
+    path = norm_path(path)
     if path == "/robots.txt":
         return True
     best_len, allow = -1, True
     for is_allow, pat in rules:
         if _rule_re(pat).match(path):
-            n = len(pat)
+            n = len(norm_path(pat))
             if n > best_len or (n == best_len and is_allow):
                 best_len, allow = n, is_allow
     return allow
@@ -134,7 +170,11 @@ def robots_allowed(rules, path):
 # ---------------------------------------------------------------- choosing pages
 
 def _origin(u):
-    p = urlparse(u)
+    """(scheme, host[:port]) of a URL, or None when it is not a valid URL (e.g. "http://[x/")."""
+    try:
+        p = urlparse(u)
+    except ValueError:
+        return None
     return (p.scheme, (p.netloc or "").lower())
 
 
@@ -150,8 +190,11 @@ def _candidate(href, base, origin):
     href = (href or "").strip()
     if not href or href.startswith("#"):
         return None
-    full = urljoin(base, href)
-    p = urlparse(full)
+    try:
+        full = urljoin(base, href)
+        p = urlparse(full)
+    except ValueError:                        # a malformed link ("http://[x/") is skipped, never fatal
+        return None
     if p.scheme not in ("http", "https") or (p.scheme, (p.netloc or "").lower()) != origin:
         return None
     if p.query or p.params or p.username or p.password:
@@ -243,6 +286,17 @@ def _nm(cid, reason):
 def unmeasured_page(url, reason, title=""):
     return {"url": url, "path": urlparse(url).path or "/", "title": title, "issues": [], "passed": 0,
             "not_measured": [_nm(cid, reason) for cid, _l in CHECKS]}
+
+
+def page_soup(resp):
+    """Parse a page. Without a charset in Content-Type, requests decodes HTML as Latin-1, so a
+    UTF-8 link like /caf\u00e9 would read as /caf\u00c3\u00a9 (wrong page, wrong robots match); the raw
+    bytes let the parser use the page's own <meta charset> instead."""
+    ctype = str((getattr(resp, "headers", None) or {}).get("Content-Type", "")).lower()
+    raw = getattr(resp, "content", None)
+    if isinstance(raw, bytes) and raw and "charset=" not in ctype:
+        return BeautifulSoup(raw, "lxml")
+    return BeautifulSoup(resp.text or "", "lxml")
 
 
 def _meta(soup, name):
@@ -353,12 +407,19 @@ def check_content(url, resp, soup, home):
                              "no rel=canonical link; Google may treat copies of this page (with tracking tags, "
                              "with or without www) as separate pages"))
     else:
-        target = urljoin(resp.url or url, canon[0]["href"].strip())
         here = resp.url or url
+        try:
+            target = urljoin(here, canon[0]["href"].strip())
+            target_host = urlparse(target).hostname
+        except ValueError:
+            target = target_host = None
         if len(canon) > 1:
             issues.append(_issue("canonical", "More than one canonical link", "MINOR",
                                  f"{len(canon)} rel=canonical links; Google may ignore them all"))
-        elif urlparse(target).hostname != urlparse(here).hostname:
+        elif target is None:
+            issues.append(_issue("canonical", "Canonical link is not a valid address", "MINOR",
+                                 "the rel=canonical link is not a valid web address, so Google ignores it"))
+        elif target_host != urlparse(here).hostname:
             issues.append(_issue("canonical", "Canonical link points to another site", "MAJOR",
                                  f"canonical is {target[:120]}; Google may list that address instead of this page"))
         elif page_key(target) != page_key(here):
@@ -389,13 +450,16 @@ def check_page(url, resp, home):
     status = resp.status_code
     final = resp.url or url
     hops = len(getattr(resp, "history", None) or [])
+    if status >= 400 and status not in BROKEN_STATUS:
+        # 401, 403, 429, 5xx...: the site turned our checker away; that says nothing about the page
+        return unmeasured_page(url, r_refused(status))
     if status >= 400:
         page["issues"].append(_issue("status", f"Page is broken (HTTP {status})", "CRITICAL",
                                      f"a link to {page['path']} on your site leads to an error page"))
         page["not_measured"] = [_nm(cid, "the page answered with an error, so its content was not checked")
                                 for cid in CONTENT_IDS]
         return page
-    off_site = urlparse(final).hostname != urlparse(url).hostname
+    off_site = _origin(final) != _origin(url)
     if hops:
         dest = final[:120] if off_site else (urlparse(final).path or "/")
         page["issues"].append(_issue("status", "Page redirects", "MINOR",
@@ -404,19 +468,18 @@ def check_page(url, resp, home):
     else:
         page["passed"] += 1
     if off_site:
-        page["not_measured"] = [_nm(cid, "the page redirects to another site, which this check does not cover")
+        page["not_measured"] = [_nm(cid, "the page redirects to another site or address, which this check "
+                                         "does not cover")
                                 for cid in CONTENT_IDS]
         return page
     ctype = str((getattr(resp, "headers", None) or {}).get("Content-Type", "")).lower()
     if ctype and "html" not in ctype:
         page["not_measured"] = [_nm(cid, f"not a web page ({ctype.split(';')[0][:40]})") for cid in CONTENT_IDS]
         return page
-    soup = BeautifulSoup(resp.text, "lxml")
+    soup = page_soup(resp)
     raw_title = soup.title.get_text(" ", strip=True) if soup.title else ""
     if CHALLENGE_RE.search(raw_title):
-        page["not_measured"] = [_nm(cid, "the site showed a bot-check page instead of this page")
-                                for cid in CONTENT_IDS]
-        return page
+        return unmeasured_page(url, R_BOT_CHECK)
     issues, passed, nm, title = check_content(url, resp, soup, home)
     page["issues"] += issues
     page["passed"] += passed
@@ -454,6 +517,54 @@ def _get(req, url, cache, ua):
     return r
 
 
+class _Stopped:
+    """A redirect we did not follow (to another site or address): enough for check_page to report it."""
+
+    def __init__(self, url, status, history):
+        self.url, self.status_code, self.history = url, status, history
+        self.headers, self.text = {}, ""
+
+
+def fetch_page(req, url, cache, ua, rules, origin):
+    """GET one extra page, following same-site redirects one counted request at a time and
+    checking every address it redirects to against robots.txt before asking for it.
+    Returns (response, None, False), or (None, why it is not measured, whether that is the budget)."""
+    if cache is not None and url in cache:
+        r = cache[url]                       # fetched (redirects followed) while measuring the homepage
+        final = r.url or url
+        if getattr(r, "history", None) and _origin(final) == origin and \
+                not robots_allowed(rules, urlparse(final).path or "/"):
+            return None, R_ROBOTS_FINAL, False
+        return r, None, False
+    history, cur = [], url
+    for _hop in range(MAX_HOPS + 1):
+        if history:
+            why = budget_reason(req)
+            if why:
+                return None, why, True
+        try:
+            r = req.get(cur, headers={"User-Agent": ua}, timeout=_timeout(req), allow_redirects=False)
+        except ValueError:
+            # requests parses Location even when not following it; "http://[x/" raises here
+            return None, R_BAD_REDIRECT, False
+        loc = str((getattr(r, "headers", None) or {}).get("Location", "")).strip()
+        if r.status_code not in REDIRECT_STATUS or not loc:
+            r.history = history
+            return r, None, False
+        history.append(r)
+        try:
+            nxt = urljoin(cur, loc)
+            p = urlparse(nxt)
+        except ValueError:
+            return None, R_BAD_REDIRECT, False
+        if p.scheme not in ("http", "https") or _origin(nxt) != origin:
+            return _Stopped(nxt, r.status_code, history), None, False   # not fetched
+        if not robots_allowed(rules, p.path or "/"):
+            return None, R_ROBOTS_FINAL, False
+        cur = urlunparse((p.scheme, p.netloc, p.path or "/", p.params, p.query, ""))
+    return None, R_HOPS, False
+
+
 def new_state():
     return {"selected": [], "pages": [], "note": None}
 
@@ -473,7 +584,7 @@ def check_pages(req, home_url, home_resp, ua, cache=None, max_pages=MAX_PAGES, s
 
     home_url is the address the homepage was finally served from; home_resp its response."""
     st = state if state is not None else new_state()
-    soup = BeautifulSoup(home_resp.text, "lxml")
+    soup = page_soup(home_resp)
     md = _meta(soup, "description")
     home = {"title": _clean(soup.title.get_text(" ", strip=True) if soup.title else "", 300),
             "description": _clean(md.get("content") if md else "", 400)}
@@ -555,8 +666,13 @@ def check_pages(req, home_url, home_resp, ua, cache=None, max_pages=MAX_PAGES, s
             st["pages"].append(unmeasured_page(u, stopped))
             continue
         try:
-            r = _get(req, u, cache, ua)
-            st["pages"].append(check_page(u, r, home))
+            r, why, budget = fetch_page(req, u, cache, ua, rules, origin)
+            if r is None:
+                if budget:
+                    stopped = why
+                st["pages"].append(unmeasured_page(u, why))
+            else:
+                st["pages"].append(check_page(u, r, home))
         except Exception as e:     # noqa: BLE001 - every failure becomes "not measured"
             reason, budget = _classify(e)
             if budget:

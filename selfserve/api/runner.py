@@ -38,7 +38,7 @@ import signal
 import sys
 import time
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -189,6 +189,21 @@ class _RecordingClient(netguard.GuardedRequests):
         return r
 
 
+def _safe_urljoin(base, url, *a, **kw):
+    """urljoin that answers "" for a malformed address instead of raising ValueError.
+
+    f1_measure joins every homepage href (img/script/link at its resource loop, <a> at its
+    internal-link loop, contact links for 4.4); one link like "http://[x/" made urljoin raise
+    and failed the whole run. "" has no host, so f1_measure skips it as not same-site."""
+    try:
+        return urljoin(base, url, *a, **kw)
+    except ValueError:
+        return ""
+
+
+R_PAGES_FAILED = "the other pages could not be checked in this run"
+
+
 def _limits(mode):
     lim = dict(LIMITS[mode])
     if os.environ.get("SELFSERVE_TEST_ALLOW_LOOPBACK") == "1":          # tests only
@@ -242,6 +257,7 @@ def run(mode, raw_url):
     Client = _RecordingClient if mode == "pro" else netguard.GuardedRequests
     client = Client(home_lim["max_requests"], home_lim["deadline_s"])
     f1_measure.requests = client            # every get/head goes through the guard
+    f1_measure.urljoin = _safe_urljoin      # a malformed homepage link never fails the run
     f1_measure.MAX_RESOURCES = lim["max_resources"] or f1_measure.MAX_RESOURCES
     host = urlparse(url).hostname
 
@@ -279,6 +295,11 @@ def run(mode, raw_url):
             # cut short: what was not reached is marked below
             if not pages["selected"] and not pages["pages"]:
                 pages["note"] = "the run reached its time or request limit before other pages could be chosen"
+            f1_pages.finish_unmeasured(pages)
+        except Exception:      # noqa: BLE001 - the pages step never costs the buyer the homepage report
+            if not pages["selected"] and not pages["pages"]:
+                pages["note"] = R_PAGES_FAILED
+            f1_pages.finish_unmeasured(pages, R_PAGES_FAILED)
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
             client.cache.clear()
