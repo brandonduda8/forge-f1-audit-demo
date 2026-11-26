@@ -1,0 +1,4 @@
+User-agent: *
+Disallow: /locations
+Disallow: /private/
+Allow: /

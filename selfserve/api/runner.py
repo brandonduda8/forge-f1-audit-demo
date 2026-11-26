@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """runner.py - one guarded checkup run, in its own short-lived process.
 
-Usage: python3 -I runner.py <light|full> <url>
+Usage: python3 -I runner.py <light|full|pro> <url>
 Prints one JSON object on stdout and exits 0, or exits 2 on bad usage.
 
 * light: the free mini-check. f1_measure --light: exactly three requests
@@ -15,6 +15,14 @@ Prints one JSON object on stdout and exits 0, or exits 2 on bad usage.
   downloaded), with a hard cap of 90 requests and 75 seconds; plus DNS TXT
   lookups for SPF, DMARC and common DKIM names.
   Returns the structured report and the Markdown used for the PDF.
+* pro: the Pro checkup. First exactly what `full` does for the homepage, under
+  full's own caps (90 requests, 75 seconds), then up to 4 more same-site pages
+  (f1_pages.py: chosen from the homepage's nav links and the sitemap, robots.txt
+  respected, responses already fetched for the homepage reused), each checked
+  for the on-page basics. Hard cap for the whole run: 150 requests, 120 seconds.
+  The grade is the homepage's; the pages are reported beside it in
+  report["pages"] and a "PAGES CHECKED" section of the Markdown. A page the
+  budget did not reach is "not measured", never failed.
 
 Measurement is f1_measure.py and scoring is audit_pipeline.score(), imported
 from this repo unchanged in spirit: nothing is re-implemented here. This file
@@ -28,6 +36,7 @@ import re
 import resource
 import signal
 import sys
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -42,7 +51,10 @@ import netguard  # noqa: E402
 LIMITS = {
     "light": {"max_requests": 3, "deadline_s": 40, "max_resources": 0},
     "full": {"max_requests": 90, "deadline_s": 75, "max_resources": 40},
+    "pro": {"max_requests": 150, "deadline_s": 120, "max_resources": 40},
 }
+PRO_PAGES = 4
+CACHE_MAX = 24          # GET responses kept from the homepage phase for reuse (each <= 2 MB)
 # checks whose value can be partial if a cap or the guard cut the run short
 CAP_SENSITIVE = ("1.5", "1.6", "4.3", "4.4", "6.6")
 # memory ceiling for one run (Render's free instance has 512 MB for everything)
@@ -161,13 +173,64 @@ def structured(ev, sc, pipe):
             "not_measured": not_measured}
 
 
+class _RecordingClient(netguard.GuardedRequests):
+    """The guarded client, keeping the GET responses of the homepage phase so the
+    Pro page step reuses them (robots.txt, sitemap.xml, pages the crawl already
+    fetched) instead of asking the site twice. Same caps, same guard."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.cache = {}
+
+    def get(self, url, **kw):
+        r = super().get(url, **kw)
+        if len(self.cache) < CACHE_MAX:
+            self.cache.setdefault(url, r)
+        return r
+
+
+def _limits(mode):
+    lim = dict(LIMITS[mode])
+    if os.environ.get("SELFSERVE_TEST_ALLOW_LOOPBACK") == "1":          # tests only
+        if os.environ.get("RUNNER_TEST_DEADLINE"):
+            lim["deadline_s"] = int(os.environ["RUNNER_TEST_DEADLINE"])
+        if os.environ.get("RUNNER_TEST_MAX_REQUESTS"):
+            lim["max_requests"] = int(os.environ["RUNNER_TEST_MAX_REQUESTS"])
+    return lim
+
+
+def _pages_phase(client, lim, t0, ev, f1_measure, state):
+    """Pro only: up to PRO_PAGES more pages inside what is left of the whole run's budget.
+    Fills state; the caller marks whatever was not reached as not measured."""
+    import f1_pages
+    client.max_requests = lim["max_requests"]
+    client.deadline = t0 + lim["deadline_s"]
+    home_resp = client.cache.get(ev.get("url")) or client.cache.get(ev.get("final_url"))
+    if home_resp is None:
+        state["note"] = "the homepage response was not available for choosing other pages"
+        return
+    left = client.deadline - time.monotonic()
+    if left <= 1:
+        state["note"] = f1_pages.R_BUDGET
+        return
+    signal.setitimer(signal.ITIMER_REAL, left, 1.0)
+    try:
+        f1_pages.check_pages(client, ev.get("final_url") or ev["url"], home_resp, f1_measure.UA,
+                             cache=client.cache, max_pages=PRO_PAGES, state=state)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+
+
 def run(mode, raw_url):
     if mode not in LIMITS:
-        raise ValueError("mode must be light or full")
+        raise ValueError("mode must be light, full or pro")
     url = normalize_url(raw_url)
-    lim = dict(LIMITS[mode])
-    if os.environ.get("SELFSERVE_TEST_ALLOW_LOOPBACK") == "1" and os.environ.get("RUNNER_TEST_DEADLINE"):
-        lim["deadline_s"] = int(os.environ["RUNNER_TEST_DEADLINE"])   # tests only
+    lim = _limits(mode)
+    # pro: the homepage gets exactly full's caps; the pages get the rest of pro's budget
+    home_lim = lim if mode != "pro" else {
+        "max_requests": min(LIMITS["full"]["max_requests"], lim["max_requests"]),
+        "deadline_s": min(LIMITS["full"]["deadline_s"], lim["deadline_s"]),
+        "max_resources": lim["max_resources"]}
     try:
         resource.setrlimit(resource.RLIMIT_AS, (MEM_LIMIT_BYTES, MEM_LIMIT_BYTES))
     except (ValueError, OSError):
@@ -175,7 +238,9 @@ def run(mode, raw_url):
     netguard.install()
     import f1_measure
     import audit_pipeline as pipe
-    client = netguard.GuardedRequests(lim["max_requests"], lim["deadline_s"])
+    t0 = time.monotonic()
+    Client = _RecordingClient if mode == "pro" else netguard.GuardedRequests
+    client = Client(home_lim["max_requests"], home_lim["deadline_s"])
     f1_measure.requests = client            # every get/head goes through the guard
     f1_measure.MAX_RESOURCES = lim["max_resources"] or f1_measure.MAX_RESOURCES
     host = urlparse(url).hostname
@@ -188,7 +253,7 @@ def run(mode, raw_url):
         raise netguard.BudgetExceeded("BUDGET time limit reached")
 
     signal.signal(signal.SIGALRM, _too_slow)
-    signal.setitimer(signal.ITIMER_REAL, lim["deadline_s"], 1.0)
+    signal.setitimer(signal.ITIMER_REAL, home_lim["deadline_s"], 1.0)
     import tempfile
     try:
         with tempfile.TemporaryDirectory() as tmp:
@@ -203,7 +268,21 @@ def run(mode, raw_url):
                     ev = {"fatal": "the homepage took too long to load", "checks": {}}
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
-    ev = sanitize_evidence(ev, client.events, mode)
+    ev = sanitize_evidence(ev, list(client.events), mode)
+    pages = None
+    if mode == "pro" and not ev.get("fatal"):
+        import f1_pages
+        pages = f1_pages.new_state()
+        try:
+            _pages_phase(client, lim, t0, ev, f1_measure, pages)
+        except (netguard.BudgetExceeded, MemoryError):
+            # cut short: what was not reached is marked below
+            if not pages["selected"] and not pages["pages"]:
+                pages["note"] = "the run reached its time or request limit before other pages could be chosen"
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            client.cache.clear()
+        f1_pages.finish_unmeasured(pages)
     base = {"site": host, "url": url, "mode": mode, "measured_at": ev.get("measured_at"),
             "requests_made": client.count}
     if ev.get("fatal"):
@@ -228,6 +307,12 @@ def run(mode, raw_url):
         return out
     from zoneinfo import ZoneInfo
     date_str = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
+    if pages is not None:
+        rep["pages"] = pages["pages"]
+        out["report"] = rep
+        out["markdown"] = pipe.build_report(host, url, ev, sc, date_str, host, variant="selfserve",
+                                            pages=pages["pages"], pages_note=pages.get("note"))
+        return out
     out["report"] = rep
     out["markdown"] = pipe.build_report(host, url, ev, sc, date_str, host, variant="selfserve")
     return out
