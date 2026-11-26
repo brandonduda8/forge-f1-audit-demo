@@ -34,21 +34,26 @@ Save. Render restarts the service.
 
 ## 3. Check the setup
 
-Open the service's **Shell** in Render and run:
+Render's free plan has no Shell, so run the kit on your own computer, inside the `forge-f1-audit-demo` folder.
+`read -rs` asks for the token without showing it on screen or saving it in your shell history:
 
 ```
-python selfserve/api/square_cli.py doctor
+read -rs SQUARE_ACCESS_TOKEN && export SQUARE_ACCESS_TOKEN
+export SQUARE_ENV=sandbox SQUARE_LOCATION_ID=your-location-id
+python3 selfserve/api/square_cli.py doctor
 ```
+
+Close the terminal when you're done, so the token goes away with it.
 
 Each line starts with OK, WARN or FAIL. The command never prints your token or key.
 Fix any FAIL line, then run it again. It's normal to see WARN lines for the monitoring plan and the webhook until you finish steps 4 and 5.
 
 ## 4. Create the monthly monitoring plan (sandbox first)
 
-Still in the Render Shell:
+In the same terminal:
 
 ```
-python selfserve/api/square_cli.py create-monitor-plan
+python3 selfserve/api/square_cli.py create-monitor-plan
 ```
 
 This creates one subscription plan in your Square catalog, "Apex Forge Monthly Monitoring". It has one monthly
@@ -63,8 +68,8 @@ Existing subscribers stay on the old plan.
 Other commands:
 
 ```
-python selfserve/api/square_cli.py plans             # what the site offers, and at what price
-python selfserve/api/square_cli.py sales --days 30   # orders, gross, refunds, net, active monitors, monthly recurring
+python3 selfserve/api/square_cli.py plans             # what the site offers, and at what price
+python3 selfserve/api/square_cli.py sales --days 30   # orders, gross, refunds, net, active monitors, monthly recurring
 ```
 
 ## 5. Webhooks
@@ -96,7 +101,7 @@ When sandbox works, do the same steps with **Production** selected in the Develo
 
 1. Copy the production access token and the production location id into Render. Set `SQUARE_ENV=production`.
 2. Run `doctor`.
-3. Run `python selfserve/api/square_cli.py create-monitor-plan --production`. The command asks you to type `yes`,
+3. Run `python3 selfserve/api/square_cli.py create-monitor-plan --production`. The command asks you to type `yes`,
    because this creates a real plan. Paste the new variation id into Render. Sandbox and production ids are
    different, so the sandbox variation id won't work in production.
 4. Add the production webhook subscription with the same four events. Put its signature key into Render.
