@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; form-action 'self'; base-uri 'none'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Small Business Website Audit, Automated | Apex Forge</title>
+<meta name="description" content="Automated audit of your small business website: speed, mobile setup, SEO basics, contact path, trust signals, accessibility and security, ranked by impact.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip" href="#free-check">Skip to the free check</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Apex <span>Forge</span> Website Checkup</a>
+    <nav aria-label="Main">
+      <a href="#free-check">Free check</a>
+      <a href="index.html#price">Plans</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" aria-labelledby="h-hero">
+    <div class="wrap">
+      <h1 id="h-hero">An automated website audit for small businesses</h1>
+      <p class="lede">Type your website and see your grade and top 3 issues in about a minute. The checker measures your live site; nothing is guessed, and anything it can't measure is listed as not measured.</p>
+
+      <form id="check-form" class="check-form" novalidate>
+        <div id="free-check">
+          <label for="site-url">Your website address</label>
+          <div class="field-row">
+            <input id="site-url" name="url" type="text" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" maxlength="300" placeholder="yourbusiness.com" required>
+            <button id="check-btn" class="btn" type="submit">Run free check</button>
+          </div>
+          <p class="muted small">Only check websites you own or are allowed to check. The free check makes three read-only requests to the site (the homepage, robots.txt and sitemap.xml) and public DNS lookups for your SPF and DMARC email records.</p>
+        </div>
+      </form>
+
+      <div id="check-status" class="status" role="status" aria-live="polite" hidden></div>
+      <div id="check-result" class="result" tabindex="-1" aria-live="polite" hidden></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-areas">
+    <div class="wrap">
+      <h2 id="h-areas">What the audit looks at</h2>
+      <p>Six graded areas make up the score out of 100:</p>
+      <ul class="checklist">
+        <li><strong>Speed (25%)</strong> — server response time, total page weight, image sizes and formats, scripts and stylesheets that block the page.</li>
+        <li><strong>Mobile (20%)</strong> — the mobile viewport setting and tap-to-call phone links.</li>
+        <li><strong>SEO basics (20%)</strong> — page title, meta description, one main heading, LocalBusiness schema, a link to your Google Business Profile, HTTPS, robots.txt and sitemap.xml.</li>
+        <li><strong>Contact path (15%)</strong> — a phone number up top, a contact or quote form, calls to action on your pages, the path from homepage to a quote, a response-time promise, hours and service area.</li>
+        <li><strong>Reviews (10%)</strong> — whether your site shows customer reviews.</li>
+        <li><strong>Trust signals (10%)</strong> — about information, license and insurance mentions, real photos, social links, a guarantee or warranty, and broken links.</li>
+      </ul>
+      <p>Two more sections get their own score and are not part of the grade: <strong>accessibility</strong> (image alt text, form labels, heading order, page language, text contrast) and <strong>security and email trust</strong> (security headers, certificate expiry, private files, SPF, DMARC and DKIM).</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-free-full">
+    <div class="wrap">
+      <h2 id="h-free-full">Free check or full report</h2>
+      <div class="cols">
+        <div class="box">
+          <h3>Free check</h3>
+          <ul class="checklist">
+            <li>Three requests: your homepage, robots.txt and sitemap.xml, plus SPF and DMARC lookups.</li>
+            <li>Shows your grade, score, top 3 issues, and the top accessibility and security issue.</li>
+            <li>Checks that need more requests (speed of linked files, inner pages, broken links, certificate expiry, private files, DKIM) are counted as not measured.</li>
+          </ul>
+        </div>
+        <div class="box">
+          <h3>Full report</h3>
+          <ul class="checklist">
+            <li>Everything above, measured in full: up to 40 files on your homepage, a few internal pages, your contact page and up to 25 links.</li>
+            <li>Every problem ranked, each with what was measured, why it matters, how to fix it and the effort.</li>
+            <li>A list of what passed and what couldn&#39;t be measured, and a printable PDF.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-not">
+    <div class="wrap">
+      <h2 id="h-not">What it can't tell you</h2>
+      <ul class="checklist">
+        <li>Core Web Vitals and how the page looks in a real browser (these need a full browser render, so they are listed as not measured).</li>
+        <li>Your Google Business Profile, your star ratings, and your search rankings.</li>
+        <li>Your traffic, ads, calls or leads.</li>
+        <li>Whether your contact form really delivers messages: the checker never submits forms.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="faq" aria-labelledby="h-faq">
+    <div class="wrap">
+      <h2 id="h-faq">Questions</h2>
+      <dl class="faq">
+        <dt>How is the grade worked out?</dt>
+        <dd>Each check scores pass, partial or fail against a stated bar (for example, a page title of 30 to 60 characters). Checks are averaged within each area, and the six areas are weighted as shown above. Checks that couldn't be measured are left out of the score, not counted as fails.</dd>
+        <dt>Do I have to talk to anyone?</dt>
+        <dd>No. There are no calls or meetings. You run the check, pay on Square's checkout if you want the full report, and it appears on screen.</dd>
+        <dt>Does it change my site?</dt>
+        <dd>No. The checker is read-only. It never logs in, never submits forms and never changes anything.</dd>
+        <dt>Is this professional advice?</dt>
+        <dd>No. It is automated information about your website. It doesn't promise rankings, calls or sales.</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-next">
+    <div class="wrap">
+      <h2 id="h-next">Try it on your site</h2>
+      <p>Run the free check at the top of this page. If you want every finding with its fix, compare the plans.</p>
+      <div class="btn-row">
+        <a class="btn" href="#free-check">Run the free check</a>
+        <a class="btn btn-secondary" href="index.html#price">Compare plans</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <nav aria-label="Legal">
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="find.html">Find my report</a>
+    </nav>
+    <nav class="more-checks" aria-label="More checks">
+      <a href="index.html">Free website check</a>
+      <a href="small-business-website-audit.html">Website audit</a>
+      <a href="website-accessibility-check.html">Accessibility check</a>
+      <a href="ssl-certificate-check.html">HTTPS and certificate check</a>
+      <a href="spf-dmarc-email-check.html">SPF and DMARC check</a>
+      <a href="local-seo-website-check.html">Local SEO check</a>
+      <a href="website-monitoring.html">Monthly monitoring</a>
+    </nav>
+    <p>Apex Forge · Villa Park, Illinois</p>
+  </div>
+</footer>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

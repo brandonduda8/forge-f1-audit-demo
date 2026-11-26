@@ -15,7 +15,9 @@
       var when = typeof r.created === "number" ? C.formatDate(new Date(r.created * 1000).toISOString()) : "";
       var a = C.el(doc, "a", { text: "Open the report for " + C.str(r.site, 100) });
       a.setAttribute("href", r.path);           // checked against PATH_RE above: same-site page only
-      list.appendChild(C.el(doc, "li", {}, [a, when ? " (bought " + when + ")" : null]));
+      var id = r.path.split("order_id=")[1];
+      list.appendChild(C.el(doc, "li", {}, [a, when ? " (bought " + when + ")" : null, " · ",
+        C.localLink(doc, C.dashboardHref(id), "Dashboard")]));
       n += 1;
     });
     list.hidden = n === 0;

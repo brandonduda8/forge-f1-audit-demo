@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; form-action 'self'; base-uri 'none'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Monthly Website Monitoring for Small Business | Apex Forge</title>
+<meta name="description" content="Monthly website monitoring: a full automated report now, then your site re-checked about once a month, with a dashboard of what changed. Cancel online anytime.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip" href="#free-check">Skip to the free check</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Apex <span>Forge</span> Website Checkup</a>
+    <nav aria-label="Main">
+      <a href="#free-check">Free check</a>
+      <a href="index.html#price">Plans</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" aria-labelledby="h-hero">
+    <div class="wrap">
+      <h1 id="h-hero">Monthly website monitoring</h1>
+      <p class="lede">Websites drift: a plugin update drops your phone link, a certificate stops renewing, a page loses its title. Monthly Monitoring re-runs the full checkup about once a month and shows you what changed.</p>
+
+      <form id="check-form" class="check-form" novalidate>
+        <div id="free-check">
+          <label for="site-url">Your website address</label>
+          <div class="field-row">
+            <input id="site-url" name="url" type="text" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" maxlength="300" placeholder="yourbusiness.com" required>
+            <button id="check-btn" class="btn" type="submit">Run free check</button>
+          </div>
+          <p class="muted small">Only check websites you own or are allowed to check. The free check makes three read-only requests to the site (the homepage, robots.txt and sitemap.xml) and public DNS lookups for your SPF and DMARC email records.</p>
+        </div>
+      </form>
+
+      <div id="check-status" class="status" role="status" aria-live="polite" hidden></div>
+      <div id="check-result" class="result" tabindex="-1" aria-live="polite" hidden></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-how">
+    <div class="wrap">
+      <h2 id="h-how">How it works</h2>
+      <ol class="checklist">
+        <li>Pay on Square's checkout. Your full Website Checkup report appears on screen right away.</li>
+        <li>About once a month, the checker runs the full check on your site again, automatically.</li>
+        <li>Your dashboard shows each check's grade and score, and what changed since the last one: the score change, new problems and fixed problems.</li>
+        <li data-if-emails hidden>Each month you get one email with the result and a link to your dashboard. No other email.</li>
+      </ol>
+      <p class="notice" data-if-no-plan="monitor" hidden>Monthly Monitoring isn&#39;t open for sign-up right now. You can still get a one-time report from the plans on the home page.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-terms">
+    <div class="wrap">
+      <h2 id="h-terms">Price and cancelling</h2>
+      <ul class="checklist">
+        <li>It renews monthly at the price shown on the plans until you cancel.</li>
+        <li>Cancel online anytime from your dashboard. Your dashboard is linked from your report page, and Find my report gets it back with the email you paid with.</li>
+        <li>Cancelling takes effect at the end of the month you&#39;ve already paid for, and you won&#39;t be charged again.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-not">
+    <div class="wrap">
+      <h2 id="h-not">What it is not</h2>
+      <ul class="checklist">
+        <li>It is not uptime monitoring: it doesn't watch your site minute by minute or alert you the moment it goes down.</li>
+        <li>It checks the same things as the full report (see the home page for the list), once a month.</li>
+        <li>The dashboard history is kept on the checker's server and can be lost when the server is updated; your payments and subscription are always kept by Square.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="faq" aria-labelledby="h-faq">
+    <div class="wrap">
+      <h2 id="h-faq">Questions</h2>
+      <dl class="faq">
+        <dt>How often is my site checked?</dt>
+        <dd>About once a month. A site that was checked less than 25 days ago is skipped until the next run.</dd>
+        <dt>How do I cancel?</dt>
+        <dd>Open your dashboard and press Cancel monitoring, then confirm. It stays on until the end of the month you've paid for.</dd>
+        <dt>Can I monitor more than one website?</dt>
+        <dd>Each subscription covers the one website you enter at checkout. Start another for a second site.</dd>
+        <dt>Do I have to talk to anyone?</dt>
+        <dd>No. Sign-up, the reports and cancelling all happen online.</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-next">
+    <div class="wrap">
+      <h2 id="h-next">Try it on your site</h2>
+      <p>Run the free check first to see where your site stands today, then pick Monthly Monitoring on the plans.</p>
+      <div class="btn-row">
+        <a class="btn" href="#free-check">Run the free check</a>
+        <a class="btn btn-secondary" href="index.html#price">Compare plans</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <nav aria-label="Legal">
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="find.html">Find my report</a>
+    </nav>
+    <nav class="more-checks" aria-label="More checks">
+      <a href="index.html">Free website check</a>
+      <a href="small-business-website-audit.html">Website audit</a>
+      <a href="website-accessibility-check.html">Accessibility check</a>
+      <a href="ssl-certificate-check.html">HTTPS and certificate check</a>
+      <a href="spf-dmarc-email-check.html">SPF and DMARC check</a>
+      <a href="local-seo-website-check.html">Local SEO check</a>
+      <a href="website-monitoring.html">Monthly monitoring</a>
+    </nav>
+    <p>Apex Forge · Villa Park, Illinois</p>
+  </div>
+</footer>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

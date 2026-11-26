@@ -1,0 +1,17 @@
+{"ok": true, "site": "roof.example", "score": 62, "grade": "C", "measured_at": "2026-11-26T10:00:00+00:00",
+ "pdf_url": "/api/report.pdf?order_id=ORDabcdefghijkl",
+ "report": {
+  "categories": [{"name": "Speed", "score": 50, "weight": 25}, {"name": "Mobile", "score": 50, "weight": 20}],
+  "findings": [{"id": "1.1", "severity": "CRITICAL", "title": "Slow server response", "measured": "TTFB 1900ms", "why": "w", "fix": "Use faster hosting", "effort": "1 hour"}],
+  "sections": [
+    {"name": "Accessibility", "score": 60, "findings": [{"id": "7.1", "severity": "MAJOR", "title": "Images without alt text", "measured": "3 of 5 images", "why": "w", "fix": "Add alt text", "effort": "DIY, ~30 minutes"}]},
+    {"name": "Security and email trust", "score": 50, "findings": [{"id": "8.6", "severity": "MAJOR", "title": "No DMARC email record", "measured": "no DMARC record on roof.example", "why": "w", "fix": "Add a DMARC record", "effort": "DIY, ~15 minutes"}]}
+  ],
+  "passed": [{"id": "2.1", "title": "Mobile viewport setting", "measured": "width=device-width"}],
+  "not_measured": [{"id": "1.2", "label": "Largest Contentful Paint (LCP)", "reason": "needs a browser render"}],
+  "pages": [
+    {"url": "https://roof.example/about", "path": "/about", "title": "About us", "passed": 8, "not_measured": [],
+     "issues": [{"id": "p.desc", "title": "No meta description", "severity": "MAJOR", "detail": "no meta description on this page"}]},
+    {"url": "https://roof.example/contact", "path": "/contact", "title": "Contact", "passed": 9, "issues": [], "not_measured": ["canonical link"]}
+  ]
+ }}

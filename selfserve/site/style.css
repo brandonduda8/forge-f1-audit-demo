@@ -332,3 +332,64 @@ td.num, th.num { text-align: right; white-space: nowrap; }
 /* Long unbroken API strings (site names, URLs) must not widen the page at 360px. */
 .issues li > span:last-child, .result-head > div, .report-meta > div, .finding dd, .passed-list li, .nm-list li { min-width: 0; overflow-wrap: anywhere; }
 h1, h3 { overflow-wrap: anywhere; }
+
+/* ---- v2: plans, dashboard, owner page, landing pages ---- */
+[hidden] { display: none !important; }
+
+.buy-form { margin-top: 16px; }
+.buy-form .check-form { margin-top: 0; }
+.plans { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 20px; }
+@media (min-width: 860px) { .plans { grid-template-columns: repeat(3, 1fr); } }
+.plan {
+  display: flex; flex-direction: column;
+  padding: 20px 18px;
+  border: 2px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+}
+.plan[data-plan-card="checkup"] { border-color: var(--accent); background: var(--bg-accent); }
+.plan h3 { margin-bottom: 8px; }
+.plan .checklist { margin-bottom: 16px; flex: 1 1 auto; }
+.plan .btn { width: 100%; }
+.plan .per { font-size: 1rem; font-weight: 600; color: var(--text-muted); }
+.renew { margin: 10px 0 0; }
+
+.more-checks { margin-top: 10px; }
+.more-checks a { display: inline-block; margin: 0 16px 6px 0; }
+
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 12px; }
+.facts dt { font-weight: 700; }
+.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.dash-section { padding: 24px 0; }
+.confirm {
+  margin-top: 14px; padding: 16px;
+  border: 2px solid var(--sev-critical);
+  border-radius: var(--radius);
+  background: var(--bg-soft);
+}
+.btn-danger { background: var(--sev-critical); color: #FFFFFF; }
+
+.inline-label { align-self: center; font-weight: 600; }
+select {
+  font: inherit; min-height: 48px; padding: 8px 12px;
+  border: 2px solid var(--border); border-radius: var(--radius);
+  background: var(--bg); color: var(--text);
+}
+input[type="password"] {
+  width: 100%; font: inherit; padding: 12px 14px; min-height: 48px;
+  border: 2px solid var(--border); border-radius: var(--radius);
+  background: var(--bg); color: var(--text);
+}
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 16px 0 8px; }
+.tile { padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-soft); }
+.tile-label { margin: 0; font-size: .9rem; color: var(--text-muted); font-weight: 600; }
+.tile-value { margin: 2px 0 4px; font-size: 1.6rem; font-weight: 800; line-height: 1.2; overflow-wrap: anywhere; }
+
+.page-card {
+  padding: 16px; margin-bottom: 14px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg); break-inside: avoid;
+}
+.page-card h3 { overflow-wrap: anywhere; }
+.page-card p { overflow-wrap: anywhere; }
+.issues li > span:last-child strong { font-weight: 700; }

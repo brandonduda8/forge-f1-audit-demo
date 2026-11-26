@@ -1,0 +1,5 @@
+{"ok": true, "site": "roof.example", "score": 62, "grade": "C", "failing": 9, "passed": 12, "not_measured": 17,
+ "measured_at": "2026-11-26T10:00:00+00:00",
+ "top": [{"severity": "CRITICAL", "title": "Slow server response"}, {"severity": "MAJOR", "title": "No tap-to-call button"}, {"severity": "MINOR", "title": "Missing sitemap.xml or robots.txt"}],
+ "sections": [{"name": "Accessibility", "score": 60, "failing": 2, "top": {"severity": "MAJOR", "title": "Images without alt text"}},
+              {"name": "Security and email trust", "score": 50, "failing": 3, "top": {"severity": "MAJOR", "title": "No DMARC email record"}}]}
