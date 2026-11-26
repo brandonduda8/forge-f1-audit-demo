@@ -19,10 +19,7 @@
   /* The order this page is for: Square's own redirect parameter, our link's, or the one
      this browser saved before going to checkout (Square's test mode may not add it). */
   function orderIdFrom(win) {
-    var params = new URLSearchParams(win.location.search);
-    var fromUrl = params.get("order_id") || params.get("orderId") || "";
-    if (fromUrl) return { id: fromUrl, fromUrl: true };
-    return { id: C.lastOrder(win), fromUrl: false };
+    return C.orderIdFrom(win);
   }
 
   function section(doc, title, id) {
@@ -53,6 +50,44 @@
     return card;
   }
 
+  /* Pro: the extra pages, each checked for the basics. Not part of the grade. */
+  function renderPages(doc, pages) {
+    var el = C.el;
+    var list = (Array.isArray(pages) ? pages : []).filter(function (x) { return x && typeof x === "object"; }).slice(0, 10);
+    if (!list.length) return null;
+    var s = section(doc, "Pages checked (" + list.length + ")", "h-pages");
+    s.appendChild(el(doc, "p", { className: "muted small", text:
+      "Each page was checked for the basics: page title, meta description, one main heading, image alt text, " +
+      "page language, mobile viewport, thin content, noindex, canonical link, and broken or redirecting pages. " +
+      "These pages are not part of the grade above." }));
+    list.forEach(function (pg) {
+      var issues = (Array.isArray(pg.issues) ? pg.issues : []).filter(function (x) { return x && typeof x === "object"; });
+      var nm = (Array.isArray(pg.not_measured) ? pg.not_measured : []).filter(function (x) { return x !== null && x !== undefined && x !== ""; });
+      var passed = C.num(pg.passed);
+      var card = el(doc, "article", { className: "page-card" });
+      card.appendChild(el(doc, "h3", { text: C.str(pg.path || pg.url, 200) || "Page" }));
+      if (pg.url && pg.url !== pg.path) card.appendChild(el(doc, "p", { className: "muted small", text: C.str(pg.url, 300) }));
+      if (pg.title) card.appendChild(el(doc, "p", { className: "small", text: "Page title: " + C.str(pg.title, 300) }));
+      if (issues.length) {
+        var ul = el(doc, "ul", { className: "issues" });
+        issues.slice(0, 30).forEach(function (it) {
+          var body = el(doc, "span", {}, [el(doc, "strong", { text: C.str(it.title, 300) })]);
+          if (it.detail) body.appendChild(doc.createTextNode(" — " + C.str(it.detail, 600)));
+          ul.appendChild(el(doc, "li", {}, [C.severityBadge(doc, it.severity), body]));
+        });
+        card.appendChild(ul);
+      } else {
+        card.appendChild(el(doc, "p", { text: nm.length ? "No problems found in what could be measured on this page." : "No problems found on this page." }));
+      }
+      var counts = [];
+      if (passed !== null) counts.push(Math.round(passed) + " check" + (Math.round(passed) === 1 ? "" : "s") + " passed");
+      if (nm.length) counts.push("not measured: " + nm.slice(0, 12).map(function (x) { return C.str(x, 120); }).join(", "));
+      if (counts.length) card.appendChild(el(doc, "p", { className: "muted small", text: counts.join(" · ") }));
+      s.appendChild(card);
+    });
+    return s;
+  }
+
   /* Pure: build the full report node from a 200 response. */
   function renderReport(doc, data, cfg, orderId) {
     var el = C.el;
@@ -80,10 +115,11 @@
         when ? el(doc, "p", { className: "muted small", text: "Measured " + when + " from your live site." }) : null
       ])
     ]));
-    head.appendChild(el(doc, "p", { className: "notice no-print", text: "Bookmark this page — your report link works for 30 days. Lost it? Use Find my report at the bottom of any page." }));
+    head.appendChild(el(doc, "p", { className: "notice no-print", text: "Bookmark this page — your report link works for 30 days, or for as long as Monthly Monitoring is active. Lost it? Use Find my report at the bottom of any page." }));
     head.appendChild(el(doc, "div", { className: "btn-row no-print" }, [
       el(doc, "a", { className: "btn", href: pdfHref(cfg, data.pdf_url, orderId), text: "Download PDF", attrs: { rel: "noopener" } }),
-      el(doc, "button", { className: "btn btn-secondary", text: "Print", attrs: { type: "button", "data-action": "print" } })
+      el(doc, "button", { className: "btn btn-secondary", text: "Print", attrs: { type: "button", "data-action": "print" } }),
+      C.dashboardHref(orderId) ? C.localLink(doc, C.dashboardHref(orderId), "Your dashboard", "btn btn-secondary") : null
     ]));
     root.appendChild(head);
 
@@ -163,6 +199,10 @@
       root.appendChild(ss);
     });
 
+    // Pro: the extra pages
+    var pagesSection = renderPages(doc, rep.pages);
+    if (pagesSection) root.appendChild(pagesSection);
+
     // Passed
     var ps = section(doc, "What passed (" + passed.length + ")", "h-pass");
     if (passed.length) {
@@ -196,6 +236,9 @@
       ns.appendChild(nl);
     }
     root.appendChild(ns);
+
+    // Monthly Monitoring: the renewal terms, printable with the report
+    if (data.plan === "monitor") root.appendChild(C.renewalTerms(doc, orderId, null));
 
     root.appendChild(el(doc, "p", {
       className: "muted small",
@@ -287,6 +330,9 @@
             Array.prototype.forEach.call(out.querySelectorAll('[data-action="print"]'), function (b) {
               b.addEventListener("click", function () { win.print(); });
             });
+            if (d.plan === "monitor") {
+              C.loadPlans(cfg).then(function (plans) { if (plans && plans.monitor) C.fillRenewalPrice(out, plans.monitor); });
+            }
             if (d.site) doc.title = "Report for " + C.str(d.site, 100) + " — Apex Forge Website Checkup";
             var h1 = out.querySelector("h1");
             if (h1) { h1.setAttribute("tabindex", "-1"); h1.focus(); }
@@ -317,7 +363,7 @@
   }
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { isValidOrderId: isValidOrderId, orderIdFrom: orderIdFrom, renderReport: renderReport, pdfHref: pdfHref, findingCard: findingCard, init: init };
+    module.exports = { isValidOrderId: isValidOrderId, orderIdFrom: orderIdFrom, renderReport: renderReport, renderPages: renderPages, pdfHref: pdfHref, findingCard: findingCard, init: init };
   } else {
     init(document, window);
   }

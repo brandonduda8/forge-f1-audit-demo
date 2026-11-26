@@ -1,0 +1,8 @@
+{"ok": true, "site": "roof.example", "plan": "monitor", "report_path": "report.html?order_id=ORDabcdefghijkl",
+ "subscription": {"status": "ACTIVE", "start_date": "2026-10-26", "charged_through_date": "2026-12-26", "canceled_date": null},
+ "history": [{"at": 1795731516.4, "grade": "B", "score": 81}, {"at": 1793139516.0, "grade": "C", "score": 70}],
+ "latest_changes": {"since": 1793139516.0, "grade_before": "C", "grade_after": "B", "score_before": 70, "score_after": 81,
+                    "score_change": 11,
+                    "new": [{"id": "8.6", "title": "No DMARC email record", "severity": "HIGH"}],
+                    "fixed": [{"id": "1.1", "title": "Slow server response", "severity": "CRITICAL"},
+                              {"id": "2.4", "title": "No tap-to-call button", "severity": "CRITICAL"}]}}

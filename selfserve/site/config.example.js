@@ -5,5 +5,6 @@ window.APEX_CONFIG = {
   "apiBase": "https://your-checker-api.example.invalid",
   "checkout": true,
   "price": "$29",
-  "supportEmail": ""
+  "supportEmail": "",
+  "emails": false
 };

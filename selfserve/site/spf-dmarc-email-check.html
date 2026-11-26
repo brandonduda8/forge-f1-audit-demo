@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; form-action 'self'; base-uri 'none'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>SPF and DMARC Email Record Check | Apex Forge</title>
+<meta name="description" content="Free check of your domain's SPF and DMARC email records, which help stop scammers sending email as your business. The full report also looks for DKIM.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip" href="#free-check">Skip to the free check</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Apex <span>Forge</span> Website Checkup</a>
+    <nav aria-label="Main">
+      <a href="#free-check">Free check</a>
+      <a href="index.html#price">Plans</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" aria-labelledby="h-hero">
+    <div class="wrap">
+      <h1 id="h-hero">SPF and DMARC check for your business email</h1>
+      <p class="lede">Type your website and see whether your domain publishes SPF and DMARC records. These public DNS records tell other mail servers who may send email as you, and what to do with email that pretends to be you.</p>
+
+      <form id="check-form" class="check-form" novalidate>
+        <div id="free-check">
+          <label for="site-url">Your website address</label>
+          <div class="field-row">
+            <input id="site-url" name="url" type="text" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" maxlength="300" placeholder="yourbusiness.com" required>
+            <button id="check-btn" class="btn" type="submit">Run free check</button>
+          </div>
+          <p class="muted small">Only check websites you own or are allowed to check. The free check makes three read-only requests to the site (the homepage, robots.txt and sitemap.xml) and public DNS lookups for your SPF and DMARC email records.</p>
+        </div>
+      </form>
+
+      <div id="check-status" class="status" role="status" aria-live="polite" hidden></div>
+      <div id="check-result" class="result" tabindex="-1" aria-live="polite" hidden></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-checks">
+    <div class="wrap">
+      <h2 id="h-checks">What it checks</h2>
+      <ul class="checklist">
+        <li><strong>SPF</strong> — a v=spf1 TXT record on your domain, whether there is more than one (only one is allowed), and whether it ends in +all, which lets anyone send as you, or ?all, which leaves unlisted senders neutral.</li>
+        <li><strong>DMARC</strong> — a v=DMARC1 record at _dmarc on your domain, and its policy. A policy of none only monitors; quarantine or reject actually protects you.</li>
+        <li><strong>DKIM</strong> (full report) — looks up common DKIM selector names (such as google, default, selector1 and selector2).</li>
+      </ul>
+      <p>The domain comes from your website address (www. is dropped). For a subdomain, the parent domain's records are checked too. Both SPF and DMARC are part of the free check, because they are public DNS lookups that never touch your site.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-honest">
+    <div class="wrap">
+      <h2 id="h-honest">What the results can and can't say</h2>
+      <ul class="checklist">
+        <li>DKIM keys sit under a name only your email provider knows. If none of the common names answers, the report says not measured, not that DKIM is missing.</li>
+        <li>If a DNS lookup doesn't finish in time, that check is listed as not measured, never as a fail.</li>
+        <li>It doesn't send any email or test whether your messages reach inboxes.</li>
+        <li>If your business email uses a different domain from your website, the records checked are for the website's domain.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="faq" aria-labelledby="h-faq">
+    <div class="wrap">
+      <h2 id="h-faq">Questions</h2>
+      <dl class="faq">
+        <dt>What is SPF?</dt>
+        <dd>A public DNS record that lists which servers may send email for your domain. Without it, scam email can pose as you and your real email is more likely to land in spam.</dd>
+        <dt>What is DMARC?</dt>
+        <dd>A public DNS record that tells inboxes what to do with email that fails the SPF or DKIM checks: nothing (none), send it to spam (quarantine) or block it (reject).</dd>
+        <dt>Where do I add these records?</dt>
+        <dd>At whoever runs your domain's DNS, usually your domain registrar or web host. Your email provider gives you the exact values. The full report explains each fix.</dd>
+        <dt>Do you read my email?</dt>
+        <dd>No. The check only reads public DNS records that anyone can look up.</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-next">
+    <div class="wrap">
+      <h2 id="h-next">Try it on your site</h2>
+      <p>Run the free check at the top of this page. If you want every finding with its fix, compare the plans.</p>
+      <div class="btn-row">
+        <a class="btn" href="#free-check">Run the free check</a>
+        <a class="btn btn-secondary" href="index.html#price">Compare plans</a>
+      </div>
+      <p class="muted small" data-if-plan="monitor" hidden>Want it re-checked every month? <a href="website-monitoring.html">Monthly Monitoring</a> is <span data-plan-terms="monitor">$29 a month</span>, and the full report comes with the first month. It renews monthly until you cancel online from your dashboard, and cancelling takes effect at the end of the month you've paid for.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <nav aria-label="Legal">
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="find.html">Find my report</a>
+    </nav>
+    <nav class="more-checks" aria-label="More checks">
+      <a href="index.html">Free website check</a>
+      <a href="small-business-website-audit.html">Website audit</a>
+      <a href="website-accessibility-check.html">Accessibility check</a>
+      <a href="ssl-certificate-check.html">HTTPS and certificate check</a>
+      <a href="spf-dmarc-email-check.html">SPF and DMARC check</a>
+      <a href="local-seo-website-check.html">Local SEO check</a>
+      <a href="website-monitoring.html">Monthly monitoring</a>
+    </nav>
+    <p>Apex Forge · Villa Park, Illinois</p>
+  </div>
+</footer>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

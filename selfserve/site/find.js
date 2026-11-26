@@ -5,6 +5,8 @@
 
   var C = (typeof module !== "undefined" && module.exports) ? require("./common.js") : window.ApexCommon;
   var PATH_RE = /^report\.html\?order_id=[A-Za-z0-9_-]{10,64}$/;
+  var EMAILED_MESSAGE = "We've emailed the links to that address if we found any. It can take a few minutes; check your spam folder too. " +
+    "Use the email you typed at checkout.";
 
   function renderMatches(doc, list, data) {
     C.clear(list);
@@ -12,10 +14,12 @@
     var n = 0;
     reports.slice(0, 5).forEach(function (r) {
       if (!r || typeof r.path !== "string" || !PATH_RE.test(r.path)) return;
-      var when = typeof r.created === "number" ? C.formatDate(new Date(r.created * 1000).toISOString()) : "";
+      var when = C.formatWhen(r.created);
       var a = C.el(doc, "a", { text: "Open the report for " + C.str(r.site, 100) });
       a.setAttribute("href", r.path);           // checked against PATH_RE above: same-site page only
-      list.appendChild(C.el(doc, "li", {}, [a, when ? " (bought " + when + ")" : null]));
+      var id = r.path.split("order_id=")[1];
+      list.appendChild(C.el(doc, "li", {}, [a, when ? " (bought " + when + ")" : null, " · ",
+        C.localLink(doc, C.dashboardHref(id), "Dashboard")]));
       n += 1;
     });
     list.hidden = n === 0;
@@ -65,7 +69,12 @@
         body: JSON.stringify({ email: e.slice(0, 254), website: s.slice(0, 300) })
       }, 90000, function () { showStatus(C.WAKE_MESSAGE, false, true); }, 8000)
         .then(function (r) {
-          if (r.status === 200 && r.data && r.data.ok === true && renderMatches(doc, list, r.data) > 0) {
+          if (r.status === 200 && r.data && r.data.ok === true && r.data.emailed === true) {
+            // Emails are on: the links went to that inbox, never to this page (so a stranger can't open or cancel).
+            C.clear(list);
+            list.hidden = true;
+            showStatus(EMAILED_MESSAGE, false, false);
+          } else if (r.status === 200 && r.data && r.data.ok === true && renderMatches(doc, list, r.data) > 0) {
             showStatus("Found it. Bookmark the report page this time.", false, false);
           } else {
             showStatus(C.errorText(r.data, "We couldn't find a report for that email and website."), true, false);
@@ -77,7 +86,7 @@
   }
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { renderMatches: renderMatches, init: init };
+    module.exports = { renderMatches: renderMatches, init: init, EMAILED_MESSAGE: EMAILED_MESSAGE };
   } else {
     init(document, window);
   }

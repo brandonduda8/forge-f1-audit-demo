@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; form-action 'self'; base-uri 'none'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Local SEO Website Check for Small Businesses | Apex Forge</title>
+<meta name="description" content="Check what local search reads on your site: title, description, headings, LocalBusiness schema, phone, hours, service area and a Google Business Profile link.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip" href="#free-check">Skip to the free check</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Apex <span>Forge</span> Website Checkup</a>
+    <nav aria-label="Main">
+      <a href="#free-check">Free check</a>
+      <a href="index.html#price">Plans</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" aria-labelledby="h-hero">
+    <div class="wrap">
+      <h1 id="h-hero">Local SEO check for your business website</h1>
+      <p class="lede">A free automated look at the on-site basics that help local customers find and contact you. It checks your website, not your Google listing or your rankings.</p>
+
+      <form id="check-form" class="check-form" novalidate>
+        <div id="free-check">
+          <label for="site-url">Your website address</label>
+          <div class="field-row">
+            <input id="site-url" name="url" type="text" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" maxlength="300" placeholder="yourbusiness.com" required>
+            <button id="check-btn" class="btn" type="submit">Run free check</button>
+          </div>
+          <p class="muted small">Only check websites you own or are allowed to check. The free check makes three read-only requests to the site (the homepage, robots.txt and sitemap.xml) and public DNS lookups for your SPF and DMARC email records.</p>
+        </div>
+      </form>
+
+      <div id="check-status" class="status" role="status" aria-live="polite" hidden></div>
+      <div id="check-result" class="result" tabindex="-1" aria-live="polite" hidden></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-checks">
+    <div class="wrap">
+      <h2 id="h-checks">What it checks on your site</h2>
+      <ul class="checklist">
+        <li><strong>Page title</strong> (30 to 60 characters, not a generic &ldquo;Home&rdquo;) and <strong>meta description</strong> (120 to 160 characters).</li>
+        <li><strong>One main heading</strong> (exactly one H1).</li>
+        <li><strong>LocalBusiness schema</strong> — JSON-LD markup that tells search engines your business type, name, phone and address. Specific types such as Plumber, Dentist or Restaurant count.</li>
+        <li><strong>A link to your Google Business Profile</strong> or Google Maps listing.</li>
+        <li><strong>Phone number</strong> near the top of the page, as a <strong>tap-to-call</strong> link.</li>
+        <li><strong>Hours and service area</strong> on the page.</li>
+        <li><strong>On-site reviews</strong>, <strong>robots.txt and sitemap.xml</strong>, and <strong>HTTPS</strong>.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-not">
+    <div class="wrap">
+      <h2 id="h-not">What it doesn't check</h2>
+      <ul class="checklist">
+        <li>Your Google Business Profile itself: whether it exists, its rating or its review count.</li>
+        <li>Whether your name, address and phone match across directories.</li>
+        <li>Your search rankings, competitors or keywords.</li>
+      </ul>
+      <p class="muted">These need data from Google or other sites, which the checker doesn't read. The report lists them as not measured.</p>
+    </div>
+  </section>
+
+  <section id="faq" aria-labelledby="h-faq">
+    <div class="wrap">
+      <h2 id="h-faq">Questions</h2>
+      <dl class="faq">
+        <dt>Will this get me to the top of Google?</dt>
+        <dd>No one can promise that, and this doesn't. It finds on-site basics that are easy to fix and commonly missed.</dd>
+        <dt>What is LocalBusiness schema?</dt>
+        <dd>A small block of hidden code that hands search engines your business name, type, phone, address and hours in a format they read directly.</dd>
+        <dt>Do I need the Pro Checkup for local SEO?</dt>
+        <dd>Not necessarily. The Website Checkup covers your homepage in full. Pro adds title, description, heading and other basics on up to 4 more pages, such as your services or locations pages.</dd>
+        <dt>Does it change my site?</dt>
+        <dd>No. Every request is read-only.</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-next">
+    <div class="wrap">
+      <h2 id="h-next">Try it on your site</h2>
+      <p>Run the free check at the top of this page. If you want every finding with its fix, compare the plans.</p>
+      <div class="btn-row">
+        <a class="btn" href="#free-check">Run the free check</a>
+        <a class="btn btn-secondary" href="index.html#price">Compare plans</a>
+      </div>
+      <p class="muted small" data-if-plan="monitor" hidden>Want it re-checked every month? <a href="website-monitoring.html">Monthly Monitoring</a> is <span data-plan-terms="monitor">$29 a month</span>, and the full report comes with the first month. It renews monthly until you cancel online from your dashboard, and cancelling takes effect at the end of the month you've paid for.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <nav aria-label="Legal">
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="find.html">Find my report</a>
+    </nav>
+    <nav class="more-checks" aria-label="More checks">
+      <a href="index.html">Free website check</a>
+      <a href="small-business-website-audit.html">Website audit</a>
+      <a href="website-accessibility-check.html">Accessibility check</a>
+      <a href="ssl-certificate-check.html">HTTPS and certificate check</a>
+      <a href="spf-dmarc-email-check.html">SPF and DMARC check</a>
+      <a href="local-seo-website-check.html">Local SEO check</a>
+      <a href="website-monitoring.html">Monthly monitoring</a>
+    </nav>
+    <p>Apex Forge · Villa Park, Illinois</p>
+  </div>
+</footer>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -40,17 +40,134 @@
     try { var v = win.localStorage.getItem(LAST_ORDER_KEY); return isOrderId(v) ? v : ""; } catch (e) { return ""; }
   }
 
-  /* Ask the API for a Square checkout for this website, then go there.
+  /* The plans the API sells. Names and descriptions are ours; prices and availability come
+     from GET /api/plans at runtime. */
+  var PLAN_NAMES = { checkup: "Website Checkup", pro: "Pro Checkup", monitor: "Monthly Monitoring" };
+  var PLAN_RE = /^[a-z][a-z0-9_]{0,19}$/;
+
+  function isPlanId(value) {
+    return typeof value === "string" && PLAN_RE.test(value);
+  }
+
+  function planName(id) {
+    return Object.prototype.hasOwnProperty.call(PLAN_NAMES, id) ? PLAN_NAMES[id] : (isPlanId(id) ? id : "Website Checkup");
+  }
+
+  /* Money arrives in cents (integers). "$29", "$79.50", "$1,234.00" with always2. "" if not a number. */
+  function dollars(cents, always2) {
+    var n = num(cents);
+    if (n === null) return "";
+    n = Math.round(n);
+    var neg = n < 0;
+    n = Math.abs(n);
+    var whole = String(Math.floor(n / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    var part = n % 100;
+    var out = "$" + whole + (part || always2 ? "." + (part < 10 ? "0" : "") + part : "");
+    return neg ? "-" + out : out;
+  }
+
+  /* Pull the usable plans out of a GET /api/plans body: {id: {cents, kind, available, label}}. */
+  function plansById(data) {
+    var out = {};
+    var list = data && Array.isArray(data.plans) ? data.plans : [];
+    list.forEach(function (p) {
+      if (!p || typeof p !== "object" || !isPlanId(p.id) || out[p.id]) return;
+      var cents = num(p.cents);
+      var first = num(p.first_cents);
+      out[p.id] = {
+        id: p.id,
+        cents: cents !== null && cents > 0 ? Math.round(cents) : null,
+        first_cents: first !== null && first > 0 ? Math.round(first) : null,
+        kind: p.kind === "subscription" ? "subscription" : "one_time",
+        available: p.available === true && cents !== null && cents > 0,
+        label: str(p.label, 120)
+      };
+    });
+    return out;
+  }
+
+  /* How a plan's price reads. A subscription with a separate first-month price:
+     "$29 for the first month, then $19 a month"; otherwise "$19 a month" or "$29". "" if unknown. */
+  function priceText(p) {
+    if (!p || typeof p !== "object") return "";
+    var monthly = dollars(p.cents);
+    if (!monthly || num(p.cents) <= 0) return "";
+    if (p.kind !== "subscription") return monthly;
+    var first = num(p.first_cents) !== null && num(p.first_cents) > 0 ? dollars(p.first_cents) : "";
+    return first && first !== monthly ? first + " for the first month, then " + monthly + " a month" : monthly + " a month";
+  }
+
+  /* Fill [data-plan-terms="id"] (whole price sentence) and [data-plan-first-price="id"] from plansById. */
+  function fillPlanTerms(doc, plans) {
+    if (!plans) return;
+    Object.keys(plans).forEach(function (id) {
+      var p = plans[id];
+      var text = priceText(p);
+      if (text) Array.prototype.forEach.call(doc.querySelectorAll('[data-plan-terms="' + id + '"]'), function (n) { n.textContent = text; });
+      var first = p && (p.first_cents || p.cents) ? dollars(p.first_cents || p.cents) : "";
+      if (first) Array.prototype.forEach.call(doc.querySelectorAll('[data-plan-first-price="' + id + '"]'), function (n) { n.textContent = first; });
+    });
+  }
+
+  /* GET /api/plans -> plansById, or null when it can't be read. Never rejects. */
+  function loadPlans(cfg) {
+    if (!cfg || !cfg.apiOk) return Promise.resolve(null);
+    return fetchJson(cfg.apiBase + "/api/plans", { method: "GET" }, 60000, null).then(function (r) {
+      return r.status === 200 && r.data && r.data.ok === true && Array.isArray(r.data.plans) ? plansById(r.data) : null;
+    }, function () { return null; });
+  }
+
+  /* The printable Monthly Monitoring renewal terms, for the dashboard and the report page.
+     plan: the monitor entry of plansById (or null: the prices are then described, not shown). */
+  function renewalTerms(doc, orderId, plan) {
+    var s = el(doc, "section", { className: "renewal-terms", attrs: { "aria-labelledby": "h-renewal", "data-renewal-terms": "" } });
+    s.appendChild(el(doc, "h2", { text: "Your Monthly Monitoring terms", attrs: { id: "h-renewal" } }));
+    var ul = el(doc, "ul", { className: "checklist" });
+    ul.appendChild(el(doc, "li", { attrs: { "data-renewal-price": "" }, text: renewalPriceText(plan) }));
+    ul.appendChild(el(doc, "li", { text: "It renews automatically every month, and Square charges the payment method you used, until you cancel." }));
+    var dash = dashboardHref(orderId);
+    ul.appendChild(el(doc, "li", {}, dash ? ["Cancel online anytime from your dashboard: ", localLink(doc, dash, "open your dashboard"), "."]
+      : ["Cancel online anytime from your dashboard (linked from your report page, or use Find my report)."]));
+    ul.appendChild(el(doc, "li", { text: "When you cancel, monitoring stays on until the end of the month you've already paid for, and you won't be charged again." }));
+    s.appendChild(ul);
+    s.appendChild(el(doc, "p", { className: "small" }, ["The full terms are on the ", localLink(doc, "terms.html#monitoring", "Terms page"),
+      ". Print or save this page to keep a copy."]));
+    return s;
+  }
+
+  function renewalPriceText(plan) {
+    var t = priceText(plan && plan.kind === "subscription" ? plan : null);
+    return t ? "Price: " + t + ". The first month includes the full report. Your Square receipt shows exactly what you were charged."
+      : "Price: the first-month price (which includes the full report), then the monthly price, as shown on Square's checkout when you signed up. Your Square receipt shows exactly what you were charged.";
+  }
+
+  /* Put the current prices into a rendered renewal-terms block. */
+  function fillRenewalPrice(root, plan) {
+    Array.prototype.forEach.call(root.querySelectorAll("[data-renewal-price]"), function (n) { n.textContent = renewalPriceText(plan); });
+  }
+
+  /* Epoch seconds (the API's "at" and "created") or an ISO string -> a local date and time. */
+  function formatWhen(v) {
+    if (typeof v === "number" && isFinite(v) && v > 0) {
+      var d = new Date(v * 1000);
+      return isNaN(d.getTime()) ? "" : formatDate(d.toISOString());
+    }
+    return formatDate(v);
+  }
+
+  /* Ask the API for a Square checkout for this website and plan, then go there.
      Resolves {ok: true} after navigating, or {ok: false, message}. */
-  function startCheckout(win, cfg, website) {
+  function startCheckout(win, cfg, website, plan) {
     var value = String(website || "").trim();
+    plan = plan === undefined || plan === null || plan === "" ? "checkup" : plan;
     if (!value) return Promise.resolve({ ok: false, message: "Type your website address first, for example yourbusiness.com" });
     if (value.length > 300) return Promise.resolve({ ok: false, message: "That address is too long. Use just your homepage." });
+    if (!isPlanId(plan)) return Promise.resolve({ ok: false, message: "That plan isn't available. Please pick another." });
     if (!cfg.payOk) return Promise.resolve({ ok: false, message: "Checkout isn't switched on yet. Please come back soon." });
     return fetchJson(cfg.apiBase + "/api/checkout", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: value })
+      body: JSON.stringify({ url: value, plan: plan })
     }, 90000, null).then(function (r) {
       var d = r.data || {};
       if (r.status === 200 && d.ok === true && isCheckoutUrl(d.checkout_url) && isOrderId(d.order_id)) {
@@ -65,6 +182,46 @@
     });
   }
 
+  /* The order a page is for: our own link's order_id, Square's orderId, or the one this
+     browser saved before going to checkout (Square's test mode may not add it). */
+  function orderIdFrom(win) {
+    var params = new URLSearchParams((win.location && win.location.search) || "");
+    var fromUrl = params.get("order_id") || params.get("orderId") || "";
+    if (fromUrl) return { id: fromUrl, fromUrl: true };
+    return { id: lastOrder(win), fromUrl: false };
+  }
+
+  /* Same-site links to an order's pages. Only ever built from a checked order id. */
+  var REPORT_PATH_RE = /^\/?(report\.html\?order_id=[A-Za-z0-9_-]{10,64})$/;
+
+  function reportHref(path, orderId) {
+    var m = typeof path === "string" ? REPORT_PATH_RE.exec(path) : null;
+    if (m) return m[1];
+    return isOrderId(orderId) ? "report.html?order_id=" + encodeURIComponent(orderId) : "";
+  }
+
+  function dashboardHref(orderId) {
+    return isOrderId(orderId) ? "dashboard.html?order_id=" + encodeURIComponent(orderId) : "";
+  }
+
+  /* A same-site link to one of our own pages. Only fixed, checked paths are accepted. */
+  function localLink(doc, path, text, className) {
+    var a = el(doc, "a", { className: className || "", text: text });
+    if (/^([a-z0-9-]+\.html(\?order_id=[A-Za-z0-9_-]{10,64}|#[a-z0-9-]+)?|#[a-z0-9-]+)$/.test(String(path || ""))) a.setAttribute("href", path);
+    return a;
+  }
+
+  /* "2026-11-26" -> a local date string, without any time-zone shift. Other dates via formatDate. */
+  function formatDay(value) {
+    if (typeof value !== "string" || !value) return "";
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (!m) return formatDate(value);
+    var d = new Date(+m[1], +m[2] - 1, +m[3]);
+    if (isNaN(d.getTime())) return str(value, 20);
+    try { return d.toLocaleDateString(undefined, { dateStyle: "medium" }); }
+    catch (e) { return value; }
+  }
+
   /* Read and validate window.APEX_CONFIG. Never throws. */
   function getConfig(win) {
     var raw = (win && win.APEX_CONFIG) || {};
@@ -72,6 +229,7 @@
     var cfg = {
       apiBase: isHttpsUrl(apiBase) ? apiBase : "",
       checkout: raw.checkout !== false,
+      emails: raw.emails === true,
       price: typeof raw.price === "string" && raw.price.length <= 20 ? raw.price : "$29",
       supportEmail: typeof raw.supportEmail === "string" &&
         /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/.test(raw.supportEmail) ? raw.supportEmail : ""
@@ -200,6 +358,22 @@
     rememberOrder: rememberOrder,
     lastOrder: lastOrder,
     startCheckout: startCheckout,
+    PLAN_NAMES: PLAN_NAMES,
+    isPlanId: isPlanId,
+    planName: planName,
+    dollars: dollars,
+    plansById: plansById,
+    priceText: priceText,
+    fillPlanTerms: fillPlanTerms,
+    loadPlans: loadPlans,
+    renewalTerms: renewalTerms,
+    fillRenewalPrice: fillRenewalPrice,
+    formatWhen: formatWhen,
+    orderIdFrom: orderIdFrom,
+    reportHref: reportHref,
+    dashboardHref: dashboardHref,
+    localLink: localLink,
+    formatDay: formatDay,
     getConfig: getConfig,
     el: el,
     clear: clear,

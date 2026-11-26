@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; form-action 'self'; base-uri 'none'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Website Accessibility Check, Free | Apex Forge</title>
+<meta name="description" content="Free automated check for common website accessibility problems: missing image alt text, unlabelled form fields, skipped headings, page language and contrast.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip" href="#free-check">Skip to the free check</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Apex <span>Forge</span> Website Checkup</a>
+    <nav aria-label="Main">
+      <a href="#free-check">Free check</a>
+      <a href="index.html#price">Plans</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" aria-labelledby="h-hero">
+    <div class="wrap">
+      <h1 id="h-hero">Check your website for common accessibility problems</h1>
+      <p class="lede">A quick automated scan that flags common accessibility problems on your homepage: images without alt text, form fields without labels, skipped heading levels, a missing page language and low-contrast text. It is a starting point, not a legal audit.</p>
+
+      <form id="check-form" class="check-form" novalidate>
+        <div id="free-check">
+          <label for="site-url">Your website address</label>
+          <div class="field-row">
+            <input id="site-url" name="url" type="text" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" maxlength="300" placeholder="yourbusiness.com" required>
+            <button id="check-btn" class="btn" type="submit">Run free check</button>
+          </div>
+          <p class="muted small">Only check websites you own or are allowed to check. The free check makes three read-only requests to the site (the homepage, robots.txt and sitemap.xml) and public DNS lookups for your SPF and DMARC email records.</p>
+        </div>
+      </form>
+
+      <div id="check-status" class="status" role="status" aria-live="polite" hidden></div>
+      <div id="check-result" class="result" tabindex="-1" aria-live="polite" hidden></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-checks">
+    <div class="wrap">
+      <h2 id="h-checks">What it checks</h2>
+      <ul class="checklist">
+        <li><strong>Image alt text</strong> — images with no alt attribute. An empty alt="" counts as decorative, which is correct for decoration; hidden images are skipped.</li>
+        <li><strong>Form field labels</strong> — fields with no label, aria-label, aria-labelledby or title, so a screen reader can't say what to type.</li>
+        <li><strong>Heading order</strong> — headings that jump more than one level (an h2 followed by an h4).</li>
+        <li><strong>Page language</strong> — a lang attribute on the page, so screen readers pronounce it correctly.</li>
+        <li><strong>Text contrast</strong> — the WCAG contrast ratio, but only where an element sets both its text and background colour inline. Colours set in stylesheets need a browser render, so then contrast is listed as not measured.</li>
+      </ul>
+      <p>The free check shows the top accessibility problem it found. The full report lists every one, with a fix and an effort estimate, and gives accessibility its own score, separate from the grade. The Pro Checkup also checks image alt text and page language on up to 4 more of your pages.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-not">
+    <div class="wrap">
+      <h2 id="h-not">What it is not</h2>
+      <p><strong>This is not a legal accessibility audit, and it can't tell you whether your site complies with the ADA, WCAG or any other law or standard.</strong> Automated checks catch only some accessibility problems.</p>
+      <ul class="checklist">
+        <li>It doesn't test with a screen reader or a keyboard.</li>
+        <li>It doesn't read colours from stylesheets, check focus order, captions, or how the page behaves when zoomed.</li>
+        <li>It checks the homepage (plus up to 4 pages with Pro), not every page.</li>
+      </ul>
+      <p class="muted">For a full review, a person needs to test the site with assistive technology.</p>
+    </div>
+  </section>
+
+  <section id="faq" aria-labelledby="h-faq">
+    <div class="wrap">
+      <h2 id="h-faq">Questions</h2>
+      <dl class="faq">
+        <dt>Will this make my site ADA compliant?</dt>
+        <dd>No. It flags common problems that are easy to fix, which helps, but it isn't a compliance audit and can't certify anything.</dd>
+        <dt>Why does it say contrast was not measured?</dt>
+        <dd>Most sites set colours in stylesheets. Working out the real colours needs a full browser, which the checker doesn't run, so it says not measured instead of guessing.</dd>
+        <dt>Is an empty alt attribute a problem?</dt>
+        <dd>No. alt="" tells screen readers an image is decoration, which is correct for decorative images. Only images with no alt attribute at all are flagged.</dd>
+        <dt>Does it change my site?</dt>
+        <dd>No. It reads your public homepage like a visitor's browser would and never changes anything.</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-next">
+    <div class="wrap">
+      <h2 id="h-next">Try it on your site</h2>
+      <p>Run the free check at the top of this page. If you want every finding with its fix, compare the plans.</p>
+      <div class="btn-row">
+        <a class="btn" href="#free-check">Run the free check</a>
+        <a class="btn btn-secondary" href="index.html#price">Compare plans</a>
+      </div>
+      <p class="muted small" data-if-plan="monitor" hidden>Want it re-checked every month? <a href="website-monitoring.html">Monthly Monitoring</a> is <span data-plan-terms="monitor">$29 a month</span>, and the full report comes with the first month. It renews monthly until you cancel online from your dashboard, and cancelling takes effect at the end of the month you've paid for.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <nav aria-label="Legal">
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="find.html">Find my report</a>
+    </nav>
+    <nav class="more-checks" aria-label="More checks">
+      <a href="index.html">Free website check</a>
+      <a href="small-business-website-audit.html">Website audit</a>
+      <a href="website-accessibility-check.html">Accessibility check</a>
+      <a href="ssl-certificate-check.html">HTTPS and certificate check</a>
+      <a href="spf-dmarc-email-check.html">SPF and DMARC check</a>
+      <a href="local-seo-website-check.html">Local SEO check</a>
+      <a href="website-monitoring.html">Monthly monitoring</a>
+    </nav>
+    <p>Apex Forge · Villa Park, Illinois</p>
+  </div>
+</footer>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

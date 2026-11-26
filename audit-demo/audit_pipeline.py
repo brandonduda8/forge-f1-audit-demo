@@ -528,7 +528,53 @@ SELFSERVE_CLOSING = [
     "*This report is automated information about your public website, not professional advice. It makes no promise about search rankings or sales.*",
 ]
 
-def build_report(name, url, ev, sc, date_str, domain, variant="snapshot"):
+PAGE_SEV_RANK = {"CRITICAL": 0, "MAJOR": 1, "MINOR": 2}
+
+
+def _md_text(s, n=120):
+    """Text from a website, made safe for one Markdown line (no markup, no table breaks)."""
+    s = re.sub(r"[*`\[\]<>\\]", "", str(s or ""))
+    return re.sub(r"\s+", " ", s).strip()[:n]
+
+
+def pages_section(pages, note=None):
+    """'PAGES CHECKED' lines for the Pro checkup: the extra pages, not part of the grade."""
+    L = []
+    A = L.append
+    A("## PAGES CHECKED (shown separately, not part of the grade)")
+    A("")
+    if not pages:
+        A("No other pages were checked" + (f": {_md_text(note, 200)}." if note else "."))
+        A("")
+        return L
+    A(f"Besides the homepage, {len(pages)} more page(s) of your site were checked for the on-page basics: "
+      "title, meta description, one main heading, image alt text, page language, mobile viewport, enough text, "
+      "noindex, canonical link, and whether the page loads without an error or a redirect.")
+    A("")
+    for i, p in enumerate(pages, 1):
+        nm = p.get("not_measured") or []
+        issues = sorted(p.get("issues") or [], key=lambda x: PAGE_SEV_RANK.get(x.get("severity"), 3))
+        A(f"### Page {i}: {_md_text(p.get('path') or '/', 100) or '/'}")
+        title = _md_text(p.get("title"))
+        title_nm = any(n.get("id") == "title" for n in nm)
+        A(f"- **Title:** {title if title else ('(not checked)' if title_nm else '(none found)')}")
+        if p.get("passed", 0) == 0 and not issues and nm and len({n.get('reason') for n in nm}) == 1:
+            A(f"- **Not measured:** {_md_text(nm[0].get('reason'), 200)}. Not counted as a problem.")
+            A("")
+            continue
+        A(f"- **Result:** {p.get('passed', 0)} passed, {len(issues)} problem(s), {len(nm)} not measured")
+        for it in issues:
+            A(f"- **[{it.get('severity')}] {_md_text(it.get('title'))}** -- {_md_text(it.get('detail'), 300)}")
+        by_reason = {}
+        for n in nm:
+            by_reason.setdefault(n.get("reason"), []).append(_md_text(n.get("label")))
+        for reason, labels in by_reason.items():
+            A(f"- Not measured: {', '.join(labels)} -- {_md_text(reason, 200)}. Not counted as a problem.")
+        A("")
+    return L
+
+
+def build_report(name, url, ev, sc, date_str, domain, variant="snapshot", pages=None, pages_note=None):
     checks = sc["check_scores"]
     sev_rank = {"CRITICAL": 0, "MAJOR": 1, "MINOR": 2}
 
@@ -628,6 +674,10 @@ def build_report(name, url, ev, sc, date_str, domain, variant="snapshot"):
     A("")
     A("---")
     A("")
+    if pages is not None:                  # the Pro checkup's extra pages
+        L.extend(pages_section(pages, pages_note))
+        A("---")
+        A("")
     if variant == "selfserve":
         L.extend(SELFSERVE_CLOSING)
         return "\n".join(L)

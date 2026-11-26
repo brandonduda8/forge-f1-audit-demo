@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; form-action 'self'; base-uri 'none'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>HTTPS and SSL Certificate Check | Apex Forge</title>
+<meta name="description" content="Check that your website loads over HTTPS, sends HSTS and other security headers, and see when its SSL certificate expires and whether it is due to renew.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip" href="#free-check">Skip to the free check</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Apex <span>Forge</span> Website Checkup</a>
+    <nav aria-label="Main">
+      <a href="#free-check">Free check</a>
+      <a href="index.html#price">Plans</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" aria-labelledby="h-hero">
+    <div class="wrap">
+      <h1 id="h-hero">HTTPS and SSL certificate check for your website</h1>
+      <p class="lede">See whether your site loads over HTTPS and sends the security headers browsers look for. The full report also opens a direct connection to read your certificate's expiry date.</p>
+
+      <form id="check-form" class="check-form" novalidate>
+        <div id="free-check">
+          <label for="site-url">Your website address</label>
+          <div class="field-row">
+            <input id="site-url" name="url" type="text" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" maxlength="300" placeholder="yourbusiness.com" required>
+            <button id="check-btn" class="btn" type="submit">Run free check</button>
+          </div>
+          <p class="muted small">Only check websites you own or are allowed to check. The free check makes three read-only requests to the site (the homepage, robots.txt and sitemap.xml) and public DNS lookups for your SPF and DMARC email records.</p>
+        </div>
+      </form>
+
+      <div id="check-status" class="status" role="status" aria-live="polite" hidden></div>
+      <div id="check-result" class="result" tabindex="-1" aria-live="polite" hidden></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-checks">
+    <div class="wrap">
+      <h2 id="h-checks">What it checks</h2>
+      <ul class="checklist">
+        <li><strong>HTTPS</strong> — whether your homepage loads over a verified HTTPS connection. Browsers mark sites without it as not secure.</li>
+        <li><strong>HSTS</strong> — the Strict-Transport-Security header, which tells browsers to always use HTTPS for your site, with a max-age of at least 6 months.</li>
+        <li><strong>Security headers</strong> — Content-Security-Policy, X-Content-Type-Options, X-Frame-Options (or CSP frame-ancestors) and Referrer-Policy.</li>
+        <li><strong>Certificate expiry</strong> (full report) — the certificate's expiry date from a direct TLS connection, judged against how long the certificate lasts, so a short-lived certificate that renews itself isn't flagged.</li>
+        <li><strong>Private files</strong> (full report) — whether /.env or /.git/HEAD can be fetched from your site. The checker asks for each once and never downloads them.</li>
+      </ul>
+      <p>The free check confirms HTTPS and reads the headers from your homepage. It doesn't inspect the certificate itself; that is in the full report, and the free check says so instead of guessing.</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-not">
+    <div class="wrap">
+      <h2 id="h-not">What it doesn't do</h2>
+      <ul class="checklist">
+        <li>It isn't a penetration test or a vulnerability scan, and it doesn't try to break in.</li>
+        <li>It doesn't check every page or every subdomain, only the address you type.</li>
+        <li>It doesn't grade your server's TLS versions or cipher settings.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="faq" aria-labelledby="h-faq">
+    <div class="wrap">
+      <h2 id="h-faq">Questions</h2>
+      <dl class="faq">
+        <dt>My certificate shows only a few weeks left. Is that bad?</dt>
+        <dd>Not if it renews itself. Many certificates last 90 days and renew automatically. The full report compares the time left with the certificate's own lifetime and only flags one that looks close to expiring without renewing.</dd>
+        <dt>Why does the free check say the certificate wasn't inspected?</dt>
+        <dd>The free check makes only three requests, so it confirms HTTPS but doesn't open the separate connection needed to read the certificate. The full report does.</dd>
+        <dt>Can I fix these myself?</dt>
+        <dd>HTTPS and certificates are usually switched on at your web host. Security headers are often a setting there too. Each finding in the full report says who usually makes the change and roughly how long it takes.</dd>
+        <dt>Does it change my site?</dt>
+        <dd>No. Every request is read-only.</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-next">
+    <div class="wrap">
+      <h2 id="h-next">Try it on your site</h2>
+      <p>Run the free check at the top of this page. If you want every finding with its fix, compare the plans.</p>
+      <div class="btn-row">
+        <a class="btn" href="#free-check">Run the free check</a>
+        <a class="btn btn-secondary" href="index.html#price">Compare plans</a>
+      </div>
+      <p class="muted small" data-if-plan="monitor" hidden>Want it re-checked every month? <a href="website-monitoring.html">Monthly Monitoring</a> is <span data-plan-terms="monitor">$29 a month</span>, and the full report comes with the first month. It renews monthly until you cancel online from your dashboard, and cancelling takes effect at the end of the month you've paid for.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <nav aria-label="Legal">
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="find.html">Find my report</a>
+    </nav>
+    <nav class="more-checks" aria-label="More checks">
+      <a href="index.html">Free website check</a>
+      <a href="small-business-website-audit.html">Website audit</a>
+      <a href="website-accessibility-check.html">Accessibility check</a>
+      <a href="ssl-certificate-check.html">HTTPS and certificate check</a>
+      <a href="spf-dmarc-email-check.html">SPF and DMARC check</a>
+      <a href="local-seo-website-check.html">Local SEO check</a>
+      <a href="website-monitoring.html">Monthly monitoring</a>
+    </nav>
+    <p>Apex Forge · Villa Park, Illinois</p>
+  </div>
+</footer>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+User-agent: *
+Disallow: /caf%C3%A9
+Disallow: /private/
+Sitemap: http://[bad/sitemap.xml

@@ -1,0 +1,69 @@
+name: apex-monitor
+# Starts the Monthly Monitoring re-checks once a day (each site is re-checked only
+# when its last scan is 25+ days old, so a buyer gets about one report a month).
+# Does nothing until both repository secrets exist:
+#   APEX_API_BASE    e.g. https://apex-checkup-api.onrender.com  (https only)
+#   APEX_ADMIN_TOKEN the same value as the API's ADMIN_TOKEN (24+ characters)
+# One POST starts the run; the API does the work in the background. The job then
+# waits (GET only, no Square calls) so a free server doesn't go to sleep mid-run.
+on:
+  schedule:
+    - cron: "17 14 * * *"     # daily, 14:17 UTC
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: apex-monitor
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      APEX_API_BASE: ${{ secrets.APEX_API_BASE }}
+      APEX_ADMIN_TOKEN: ${{ secrets.APEX_ADMIN_TOKEN }}
+    steps:
+      - name: Start monitoring run
+        run: |
+          set -u
+          if [ -z "${APEX_API_BASE:-}" ] || [ -z "${APEX_ADMIN_TOKEN:-}" ]; then
+            echo "APEX_API_BASE or APEX_ADMIN_TOKEN is not set: nothing to do."
+            exit 0
+          fi
+          case "$APEX_API_BASE" in
+            https://*) ;;
+            *) echo "APEX_API_BASE must start with https://"; exit 1 ;;
+          esac
+          base="${APEX_API_BASE%/}"
+          # the token goes in a header file, never on the command line
+          hdr="$RUNNER_TEMP/apex-auth"
+          umask 077
+          printf 'Authorization: Bearer %s\n' "$APEX_ADMIN_TOKEN" > "$hdr"
+          # wake a sleeping free server (up to ~3 minutes)
+          for i in $(seq 1 18); do
+            if curl -fsS -m 20 -o /dev/null "$base/health"; then break; fi
+            sleep 10
+          done
+          code=$(curl -sS -m 60 -o /dev/null -w '%{http_code}' -X POST -H @"$hdr" \
+                 -H 'Content-Length: 0' "$base/api/admin/run-monitoring" || echo 000)
+          case "$code" in
+            202) echo "Monitoring run started." ;;
+            409) echo "A monitoring run is already going." ;;
+            *)   echo "Could not start the monitoring run (HTTP $code)."; rm -f "$hdr"; exit 1 ;;
+          esac
+          # keep the server awake until the run finishes (counters only, no Square call)
+          for i in $(seq 1 50); do
+            sleep 60
+            state=$(curl -sS -m 30 -H @"$hdr" "$base/api/admin/summary?sales=0" || true)
+            if printf '%s' "$state" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d["monitoring"]["running"] else 1)' 2>/dev/null; then
+              continue
+            fi
+            printf '%s' "$state" | python3 -c 'import json,sys
+          try:
+              d = json.load(sys.stdin)["monitoring"]["last_run"] or {}
+              print("Last run counts:", json.dumps(d.get("counts")))
+          except Exception:
+              print("Run finished (no summary available).")'
+            break
+          done
+          rm -f "$hdr"

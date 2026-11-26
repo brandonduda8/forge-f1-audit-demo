@@ -5,8 +5,13 @@
 
   var C = (typeof module !== "undefined" && module.exports) ? require("./common.js") : window.ApexCommon;
 
-  /* Pure: build the mini-check result node from a 200 response. */
-  function renderMiniResult(doc, data, cfg) {
+  var PRICING_HREFS = ["#price", "index.html#price"];
+
+  /* Pure: build the mini-check result node from a 200 response.
+     opts.pricingHref: where the plans are ("#price" on the home page, "index.html#price" elsewhere). */
+  function renderMiniResult(doc, data, cfg, opts) {
+    opts = opts || {};
+    var pricingHref = PRICING_HREFS.indexOf(opts.pricingHref) >= 0 ? opts.pricingHref : "#price";
     var el = C.el;
     var site = C.str(data.site, 200) || "your site";
     var top = Array.isArray(data.top) ? data.top.slice(0, 3) : [];
@@ -83,8 +88,9 @@
         text: "Get the full report for " + site + " — " + cfg.price,
         attrs: { type: "button", "data-buy-checked": "" }
       }));
+      cta.appendChild(C.localLink(doc, pricingHref, "Compare plans", "btn btn-secondary"));
     } else {
-      cta.appendChild(el(doc, "a", { className: "btn", href: "#price", text: "See the full report" }));
+      cta.appendChild(C.localLink(doc, pricingHref, "See the full report", "btn"));
     }
     wrap.appendChild(cta);
     wrap.appendChild(el(doc, "p", { className: "status", attrs: { "data-buy-status": "", hidden: "" } }));
@@ -93,6 +99,46 @@
       text: "You pay on Square's secure checkout page. We never see your card details."
     }));
     return wrap;
+  }
+
+  function each(doc, sel, fn) {
+    Array.prototype.forEach.call(doc.querySelectorAll(sel), fn);
+  }
+
+  /* Show prices and availability from GET /api/plans (see C.plansById), or, with plans null
+     (the request failed), keep the one-time checkup and switch the rest off. */
+  function applyPlans(doc, plans, cfg) {
+    var ids = Object.keys(C.PLAN_NAMES);
+    ids.forEach(function (id) {
+      var p = plans ? plans[id] : null;
+      var known = !!(p && p.cents);
+      var available = plans ? !!(p && p.available) : id === "checkup";
+      var price = known ? C.dollars(p.cents) : "";
+      if (price) each(doc, '[data-plan-price="' + id + '"]', function (n) { n.textContent = price; });
+      each(doc, '[data-plan-card="' + id + '"]', function (n) { n.hidden = id === "monitor" && !available; });
+      each(doc, '[data-buy-plan="' + id + '"]', function (n) { n.disabled = !(cfg.payOk && available); });
+      each(doc, '[data-plan-unavailable="' + id + '"]', function (n) { n.hidden = available || !cfg.payOk; });
+      each(doc, '[data-if-plan="' + id + '"]', function (n) { n.hidden = !available; });
+      each(doc, '[data-if-no-plan="' + id + '"]', function (n) { n.hidden = available; });
+    });
+    C.fillPlanTerms(doc, plans);
+    if (plans && plans.checkup && plans.checkup.cents) {
+      cfg.price = C.dollars(plans.checkup.cents);
+      each(doc, "[data-price]", function (n) { n.textContent = cfg.price; });
+    }
+  }
+
+  function usesPlans(doc) {
+    return ["[data-plan-card]", "[data-buy-plan]", "[data-if-plan]", "[data-if-no-plan]", "[data-plan-price]"]
+      .some(function (sel) { return doc.querySelectorAll(sel).length > 0; });
+  }
+
+  /* Resolves the plans it applied (plansById), or null when /api/plans couldn't be read. */
+  function loadPlans(doc, cfg) {
+    return C.loadPlans(cfg).then(function (plans) {
+      applyPlans(doc, plans, cfg);
+      return plans;
+    });
   }
 
   function friendlyStatusMessage(status, data) {
@@ -112,11 +158,38 @@
     }
 
     Array.prototype.forEach.call(doc.querySelectorAll("[data-price]"), function (n) { n.textContent = cfg.price; });
+    each(doc, "[data-if-emails]", function (n) { n.hidden = !cfg.emails; });
     var payNote = doc.getElementById("pay-unavailable");
     if (payNote) payNote.hidden = cfg.payOk;
+    var pricingHref = doc.getElementById("price") ? "#price" : "index.html#price";
 
-    // Buying: our API makes a Square checkout for the website, then the browser goes there.
-    function buy(btn, website, statusNode) {
+    // Until GET /api/plans answers, only the one-time checkup can be bought.
+    var plansKnown = false, plansNow = null;
+    function initialButtons() {
+      each(doc, "[data-buy-plan]", function (n) { n.disabled = !(cfg.payOk && n.getAttribute("data-buy-plan") === "checkup"); });
+    }
+    if (usesPlans(doc)) {
+      initialButtons();
+      if (cfg.apiOk) loadPlans(doc, cfg).then(function (p) { plansKnown = true; plansNow = p; });
+      else { applyPlans(doc, null, cfg); plansKnown = true; }
+    }
+
+    // Back from Square's checkout: the browser may restore this page from its cache with the
+    // plan buttons still disabled from the click. Put them back as the plans say.
+    if (win && typeof win.addEventListener === "function") {
+      win.addEventListener("pageshow", function (ev) {
+        if (!ev || !ev.persisted) return;
+        if (usesPlans(doc)) { if (plansKnown) applyPlans(doc, plansNow, cfg); else initialButtons(); }
+        var bb = doc.getElementById("buy-btn");
+        if (bb && !usesPlans(doc)) bb.disabled = !cfg.payOk;
+        each(doc, "[data-buy-checked]", function (n) { n.disabled = !cfg.payOk; });
+        [doc.getElementById("buy-status")].concat(Array.prototype.slice.call(doc.querySelectorAll("[data-buy-status]")))
+          .forEach(function (n) { if (n) { n.hidden = true; n.textContent = ""; } });
+      });
+    }
+
+    // Buying: our API makes a Square checkout for the website and plan, then the browser goes there.
+    function buy(btn, website, statusNode, plan) {
       if (btn.disabled) return;
       btn.disabled = true;
       if (statusNode) {
@@ -124,7 +197,7 @@
         statusNode.className = "status";
         statusNode.hidden = false;
       }
-      C.startCheckout(win, cfg, website).then(function (r) {
+      C.startCheckout(win, cfg, website, plan || "checkup").then(function (r) {
         if (r.ok) return;
         btn.disabled = false;
         if (statusNode) {
@@ -142,7 +215,23 @@
       buyBtn.disabled = !cfg.payOk;
       buyForm.addEventListener("submit", function (ev) {
         ev.preventDefault();
-        buy(buyBtn, buyUrl.value, buyStatus);
+        buy(buyBtn, buyUrl.value, buyStatus, "checkup");
+      });
+      each(doc, "[data-buy-plan]", function (b) {
+        var plan = b.getAttribute("data-buy-plan");
+        if (b === buyBtn || plan === "checkup") return;      // the form's own submit button
+        b.addEventListener("click", function () {
+          if (!buyUrl.value || !String(buyUrl.value).trim()) {
+            if (buyStatus) {
+              buyStatus.textContent = "Type your website address above first, for example yourbusiness.com";
+              buyStatus.className = "status error";
+              buyStatus.hidden = false;
+            }
+            if (buyUrl.focus) buyUrl.focus();
+            return;
+          }
+          buy(b, buyUrl.value, buyStatus, plan);
+        });
       });
     }
 
@@ -195,11 +284,11 @@
         .then(function (r) {
           if (r.status === 200 && r.data && r.data.ok === true) {
             status.hidden = true;
-            result.appendChild(renderMiniResult(doc, r.data, cfg));
+            result.appendChild(renderMiniResult(doc, r.data, cfg, { pricingHref: pricingHref }));
             result.hidden = false;
             if (buyUrl && !buyUrl.value) buyUrl.value = value;
             var cb = result.querySelector("[data-buy-checked]");
-            if (cb) cb.addEventListener("click", function () { buy(cb, value, result.querySelector("[data-buy-status]")); });
+            if (cb) cb.addEventListener("click", function () { buy(cb, value, result.querySelector("[data-buy-status]"), "checkup"); });
             if (result.focus) result.focus();
           } else {
             showStatus(friendlyStatusMessage(r.status, r.data), true, false);
@@ -217,7 +306,8 @@
   }
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { renderMiniResult: renderMiniResult, friendlyStatusMessage: friendlyStatusMessage, init: init };
+    module.exports = { renderMiniResult: renderMiniResult, friendlyStatusMessage: friendlyStatusMessage, applyPlans: applyPlans,
+      loadPlans: loadPlans, init: init };
   } else {
     init(document, window);
   }
