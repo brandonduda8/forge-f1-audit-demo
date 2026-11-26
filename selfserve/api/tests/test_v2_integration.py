@@ -141,6 +141,7 @@ def test_pro_purchase_runs_pro_mode_with_pages_and_pdf(world):
     code, rep = call(world["base"], "/api/report?order_id=" + oid)
     assert code == 200, rep
     assert "pages" in rep["report"] and isinstance(rep["report"]["pages"], list)
+    assert rep["plan"] == "pro"
     code, pdf = call(world["base"], "/api/report.pdf?order_id=" + oid)
     assert code == 200 and pdf[:4] == b"%PDF"
 

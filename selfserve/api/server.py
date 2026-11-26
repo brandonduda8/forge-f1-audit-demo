@@ -261,10 +261,12 @@ def render_pdf(markdown):
             return f.read()
 
 
-def public_report(sid, res):
+def public_report(sid, res, plan=None):
     keep = ("site", "url", "final_url", "redirects", "requests_made", "score", "grade", "measured_at", "report")
     out = {k: res[k] for k in keep if k in res}
     out.update(ok=True, pdf_url="/api/report.pdf?order_id=" + sid)
+    if plan:
+        out["plan"] = plan       # the report page shows the renewal terms for monitor orders
     return out
 
 
@@ -297,13 +299,13 @@ def paid_result(sid, ip="-", trusted=False):
     trusted: a signed Square webhook (doesn't spend the per-address bucket)."""
     hit = _cached(sid)
     if hit:
-        return 200, public_report(sid, hit["result"])
+        return 200, public_report(sid, hit["result"], hit.get("plan"))
     with _lock:
         lk = _inflight.setdefault(sid, threading.Lock())
     with lk:                     # a second tab waits for the first run instead of starting another
         hit = _cached(sid)
         if hit:
-            return 200, public_report(sid, hit["result"])
+            return 200, public_report(sid, hit["result"], hit.get("plan"))
         return _paid_run(sid, ip, trusted)
 
 
@@ -340,16 +342,16 @@ def _paid_run(sid, ip, trusted=False):
     first = not sess.get("delivered")
     if first and not pay.mark_delivered(sess):
         sys.stderr.write("warning: could not record report delivery on the payment\n")
-    _cache_put(_reports, sid, {"at": time.time(), "result": res})
-    bump("reports_delivered")
     plan = plan_of(sess)
+    _cache_put(_reports, sid, {"at": time.time(), "result": res, "plan": plan})
+    bump("reports_delivered")
     # only the purchase report counts for monitoring; a buyer re-opening it later is a "view"
     record_scan(sid, res, "report" if first else "view", plan)
     start_state = plan == "monitor" and first and not (sess.get("monitor_state") or {}).get("last")
     if start_state or (mailer.enabled() and not sess.get("ready_mailed")):
         threading.Thread(target=_after_delivery, args=(sid, sess, res if start_state else None),
                          daemon=True).start()
-    return 200, public_report(sid, res)
+    return 200, public_report(sid, res, plan)
 
 
 def _after_delivery(sid, sess, purchase_res):
@@ -661,7 +663,7 @@ def _monitor_result(sid, res):
     (never for an order refunded here; monitoring itself skips refunded orders)."""
     if _is_refunded(sid):
         return
-    _cache_put(_reports, sid, {"at": time.time(), "result": res})
+    _cache_put(_reports, sid, {"at": time.time(), "result": res, "plan": "monitor"})
     with _lock:
         _pdfs.pop(sid, None)
 
