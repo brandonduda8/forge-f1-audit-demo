@@ -1,0 +1,4 @@
+{"ok": true, "site": "roof.example", "plan": "monitor", "report_path": "report.html?order_id=ORDabcdefghijkl",
+ "subscription": {"id": "sub_fixture_1", "status": "ACTIVE", "start_date": "2026-10-26", "charged_through_date": "2026-12-26", "canceled_date": null},
+ "history": [{"at": "2026-11-26T09:00:00+00:00", "grade": "B", "score": 81}, {"at": "2026-10-26T09:00:00+00:00", "grade": "C", "score": 70}],
+ "latest_changes": {"score_change": 11, "new_problems": ["No DMARC email record"], "fixed": ["Slow server response", "No tap-to-call button"]}}

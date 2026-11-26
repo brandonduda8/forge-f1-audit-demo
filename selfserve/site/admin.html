@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; form-action 'self'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Owner dashboard — Apex Forge Website Checkup</title>
+<meta name="description" content="Owner-only sales and monitoring summary for Apex Forge Website Checkup.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the owner dashboard</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Apex <span>Forge</span> Website Checkup</a>
+  </div>
+</header>
+
+<main id="main">
+  <div class="wrap">
+    <h1>Owner dashboard</h1>
+    <noscript>
+      <p class="status error">This page needs JavaScript.</p>
+    </noscript>
+
+    <form id="admin-login" class="check-form" action="#" novalidate>
+      <label for="admin-token">Admin token</label>
+      <div class="field-row">
+        <input id="admin-token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="512" required>
+        <button id="admin-login-btn" class="btn" type="submit">Open</button>
+      </div>
+      <p class="muted small">Paste the ADMIN_TOKEN you set on the API service. It stays in this browser tab only (session storage) and is gone when you close the tab or press Log out.</p>
+    </form>
+
+    <div id="admin-bar" class="btn-row" hidden>
+      <label for="admin-days" class="inline-label">Period</label>
+      <select id="admin-days">
+        <option value="7">Last 7 days</option>
+        <option value="30" selected>Last 30 days</option>
+        <option value="90">Last 90 days</option>
+      </select>
+      <button id="admin-refresh" class="btn btn-secondary" type="button">Refresh</button>
+      <button id="admin-run" class="btn btn-secondary" type="button">Run monitoring now</button>
+      <button id="admin-logout" class="btn btn-secondary" type="button">Log out</button>
+    </div>
+
+    <div id="admin-status" class="status" role="status" aria-live="polite" hidden></div>
+    <div id="admin-root"></div>
+  </div>
+</main>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="admin.js"></script>
+</body>
+</html>

@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https:; form-action 'self'; base-uri 'none'">
 <meta name="referrer" content="strict-origin-when-cross-origin">
-<title>Apex Forge Website Checkup — free website check for local businesses</title>
-<meta name="description" content="Free 60-second check of your small business website: see your grade and top 3 issues. Get the full $29 automated report with ranked fixes and a PDF.">
+<title>Free Website Check for Local Businesses | Apex Forge</title>
+<meta name="description" content="Free 60-second check of your small business website: see your grade and top 3 issues, then get a full automated report with ranked fixes and a PDF.">
 <link rel="stylesheet" href="style.css">
 <link rel="icon" href="data:,">
 </head>
@@ -18,7 +18,7 @@
     <a class="brand" href="index.html">Apex <span>Forge</span> Website Checkup</a>
     <nav aria-label="Main">
       <a href="#free-check">Free check</a>
-      <a href="#price">Price</a>
+      <a href="#price">Plans</a>
       <a href="#faq">FAQ</a>
     </nav>
   </div>
@@ -48,7 +48,7 @@
 
   <section aria-labelledby="h-includes">
     <div class="wrap">
-      <h2 id="h-includes">What the $29 report includes</h2>
+      <h2 id="h-includes">What the full report includes</h2>
       <p>Over 35 automated checks of your live website: six graded areas, plus accessibility and security scored on their own:</p>
       <div class="cols">
         <div class="box">
@@ -90,7 +90,7 @@
         <li>Whether your contact form really delivers messages (we never submit your forms).</li>
         <li>A full accessibility audit (screen-reader testing, colours set in stylesheets) or a penetration test. The accessibility and security checks are a basic automated scan.</li>
       </ul>
-      <p class="muted">The checker reads your homepage and a small number of linked pages. It is not a full-site crawl.</p>
+      <p class="muted">The checker reads your homepage and a small number of linked pages. It is not a full-site crawl. The Pro Checkup adds up to 4 more of your pages, each checked for the basics.</p>
     </div>
   </section>
 
@@ -117,26 +117,62 @@
 
   <section id="price" aria-labelledby="h-price">
     <div class="wrap">
-      <h2 id="h-price">Price</h2>
-      <div class="price-box">
-        <p class="price" data-price>$29</p>
-        <p class="muted">One-time payment. Not a subscription.</p>
-        <ul class="checklist">
-          <li>Full report for one website, on screen right away</li>
-          <li>Printable PDF download</li>
-          <li>Automatic refund if the checker can't reach your site</li>
-        </ul>
-        <form id="buy-form" class="check-form" novalidate>
+      <h2 id="h-price">Plans and prices</h2>
+      <p>Every plan is automated: no account, no calls, no meetings. You pay on Square's secure checkout page.</p>
+      <form id="buy-form" class="buy-form" novalidate>
+        <div class="check-form">
           <label for="buy-url">Website to check</label>
-          <div class="field-row">
-            <input id="buy-url" name="url" type="text" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" maxlength="300" placeholder="yourbusiness.com" required>
-            <button id="buy-btn" class="btn" type="submit" disabled>Buy the full report</button>
-          </div>
-        </form>
+          <input id="buy-url" name="url" type="text" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" maxlength="300" placeholder="yourbusiness.com" required>
+          <p class="muted small">Type it once, then pick a plan. Each plan's button opens Square's checkout for this website.</p>
+        </div>
         <p id="buy-status" class="status" role="status" aria-live="polite" hidden></p>
-        <p class="muted small">You pay on Square's secure checkout page by card, Cash App Pay, Apple Pay or Google Pay, where available. We never see your card details.</p>
-        <p id="pay-unavailable" class="small" hidden>Checkout isn't switched on yet. Please come back soon.</p>
-      </div>
+
+        <div class="plans">
+          <article class="plan" data-plan-card="checkup" aria-labelledby="h-plan-checkup">
+            <h3 id="h-plan-checkup">Website Checkup</h3>
+            <p class="price"><span data-plan-price="checkup" data-price>$29</span></p>
+            <p class="muted small">One-time payment. Not a subscription.</p>
+            <ul class="checklist">
+              <li>The full report for one website, on screen right away</li>
+              <li>Every check above, with ranked fixes and effort estimates</li>
+              <li>Printable PDF download</li>
+              <li>Automatic refund if the checker can't reach your site</li>
+            </ul>
+            <button id="buy-btn" class="btn" type="submit" data-buy-plan="checkup" disabled>Buy the Website Checkup</button>
+            <p class="small" data-plan-unavailable="checkup" hidden>Not available right now.</p>
+          </article>
+
+          <article class="plan" data-plan-card="pro" aria-labelledby="h-plan-pro">
+            <h3 id="h-plan-pro">Pro Checkup</h3>
+            <p class="price"><span data-plan-price="pro">$79</span></p>
+            <p class="muted small">One-time payment. Not a subscription.</p>
+            <ul class="checklist">
+              <li>Everything in the Website Checkup</li>
+              <li>Up to 4 more of your pages (found from your sitemap and menu, such as about, services, contact or pricing)</li>
+              <li>Each extra page checked for its title, meta description, main heading, image alt text, language, mobile viewport, thin content, noindex, canonical link, and broken or redirecting pages</li>
+              <li>Your grade stays the homepage grade; extra pages are listed on their own</li>
+            </ul>
+            <button class="btn" type="button" data-buy-plan="pro" disabled>Buy the Pro Checkup</button>
+            <p class="small" data-plan-unavailable="pro" hidden>Not available right now.</p>
+          </article>
+
+          <article class="plan" data-plan-card="monitor" aria-labelledby="h-plan-monitor" hidden>
+            <h3 id="h-plan-monitor">Monthly Monitoring</h3>
+            <p class="price"><span data-plan-price="monitor">$19</span> <span class="per">per month</span></p>
+            <p class="muted small">Subscription. Cancel online anytime.</p>
+            <ul class="checklist">
+              <li>The full Website Checkup report now</li>
+              <li>Your site re-checked automatically about once a month</li>
+              <li>A dashboard with each month's grade and what changed: score, new problems, fixed problems</li>
+              <li data-if-emails hidden>An email with each month's result and a link to your dashboard</li>
+            </ul>
+            <button class="btn" type="button" data-buy-plan="monitor" aria-describedby="monitor-renew" disabled>Start Monthly Monitoring</button>
+            <p id="monitor-renew" class="small renew">Renews monthly at <span data-plan-price="monitor">$19</span> until you cancel. Cancel online anytime from your dashboard (linked from your report page and from Find my report). Cancelling takes effect at the end of the month you've already paid for.</p>
+          </article>
+        </div>
+      </form>
+      <p class="muted small">You pay on Square's secure checkout page by card, Cash App Pay, Apple Pay or Google Pay, where available. We never see your card details.</p>
+      <p id="pay-unavailable" class="small" hidden>Checkout isn't switched on yet. Please come back soon.</p>
     </div>
   </section>
 
@@ -151,7 +187,11 @@
         <dt>What if my site can't be reached?</dt>
         <dd>If the checker can't reach your site after you pay, the report page offers a button that refunds you automatically.</dd>
         <dt>Is this a subscription?</dt>
-        <dd>No. You pay once for one report.</dd>
+        <dd>The Website Checkup and the Pro Checkup are one-time payments for one report. Monthly Monitoring is a subscription: it renews each month at the price shown until you cancel.</dd>
+        <dt>How do I cancel Monthly Monitoring?</dt>
+        <dd>Open your dashboard (there's a link on your report page, or use Find my report) and press Cancel monitoring. It stays on until the end of the month you've already paid for, and you won't be charged again.</dd>
+        <dt>What does the Pro Checkup add?</dt>
+        <dd>Up to 4 more of your pages, picked from your sitemap and menu, each checked for the basics: title, meta description, main heading, image alt text, language, mobile viewport, thin content, noindex, canonical link, and broken or redirecting pages. Pages that the time limit cut short are listed as not measured.</dd>
         <dt>Do you change my site?</dt>
         <dd>No. The checker is read-only. It makes a few polite requests to your site, the same way a visitor's browser would, and never logs in or submits forms. To see whether private files like .env are public, it asks for each one once without downloading it, and it reads your domain's public email records (DNS).</dd>
         <dt>Can I check someone else's site?</dt>
@@ -169,6 +209,14 @@
       <a href="privacy.html">Privacy</a>
       <a href="terms.html">Terms</a>
       <a href="find.html">Find my report</a>
+    </nav>
+    <nav class="more-checks" aria-label="More checks">
+      <a href="small-business-website-audit.html">Website audit</a>
+      <a href="website-accessibility-check.html">Accessibility check</a>
+      <a href="ssl-certificate-check.html">HTTPS and certificate check</a>
+      <a href="spf-dmarc-email-check.html">SPF and DMARC check</a>
+      <a href="local-seo-website-check.html">Local SEO check</a>
+      <a href="website-monitoring.html">Monthly monitoring</a>
     </nav>
     <p>Apex Forge · Villa Park, Illinois</p>
   </div>

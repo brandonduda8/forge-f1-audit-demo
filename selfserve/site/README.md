@@ -8,8 +8,11 @@ scripts, fonts, images, CDNs, analytics or trackers. The only build step writes
 
 1. `index.html` — a visitor types their website and gets a free mini-check
    (grade, score, top 3 issues) from `POST {APEX_API_BASE}/api/check`.
-2. Buy (on the free-check result, or the price box) sends the website to
-   `POST {APEX_API_BASE}/api/checkout`. The API creates a Square payment link whose
+2. Buy (on the free-check result, or a plan card) sends the website and plan to
+   `POST {APEX_API_BASE}/api/checkout` as `{"url", "plan"}`. Plans and prices come from
+   `GET {APEX_API_BASE}/api/plans` at runtime: until it answers only the one-time Website Checkup
+   can be bought (at `APEX_PRICE`), Pro needs the API to list it as available, and the Monthly
+   Monitoring card stays hidden unless the API lists it as available. The API creates a Square payment link whose
    order holds the website, and returns its URL and the order id. The page checks the
    URL is Square's own (`square.link`, `checkout.square.site`, `squareup.com`,
    `squareupsandbox.com`), saves the order id in this browser, and goes there.
@@ -20,12 +23,21 @@ scripts, fonts, images, CDNs, analytics or trackers. The only build step writes
    link and a Print button. If the site can't be reached the page offers an automatic refund
    via `POST {APEX_API_BASE}/api/refund`.
 4. `find.html` gets a lost link back from the email paid with plus the website.
+5. `dashboard.html?order_id=...` (linked from the report page and Find my report) shows the plan,
+   the report link, check history, the latest changes and the subscription; Monthly Monitoring can
+   be cancelled there after an in-page confirmation (`POST /api/cancel`).
+6. `admin.html` is the owner's page (noindex). Paste `ADMIN_TOKEN`; it is kept in
+   `sessionStorage` only (never localStorage or a URL) and sent as `Authorization: Bearer ...` to
+   `/api/admin/summary` and `/api/admin/run-monitoring`. Log out removes it.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `index.html` + `app.js` | Landing page and free mini-check |
+| `index.html` + `app.js` | Landing page, plans and free mini-check |
+| `small-business-website-audit.html`, `website-accessibility-check.html`, `ssl-certificate-check.html`, `spf-dmarc-email-check.html`, `local-seo-website-check.html`, `website-monitoring.html` | Search landing pages: what that part of the checker really checks, what it doesn't, an FAQ, and the free check (`app.js`) |
+| `dashboard.html` + `dashboard.js` | Buyer dashboard (`?order_id=`) |
+| `admin.html` + `admin.js` | Owner dashboard (sales, MRR, counters, run monitoring) |
 | `report.html` + `report.js` | Paid report page (reads `order_id` / `orderId`) |
 | `privacy.html`, `terms.html` + `legal.js` | Legal pages (DRAFTS: read before publishing; not legal advice). `legal.js` shows the support email if one is configured |
 | `404.html` | Not-found page (uses absolute `/` paths so it works at any URL) |
@@ -33,7 +45,7 @@ scripts, fonts, images, CDNs, analytics or trackers. The only build step writes
 | `style.css` | Shared styles: mobile-first, dark mode, focus states, print styles |
 | `config.example.js` | Example of the generated `config.js` |
 | `build_config.py` | Writes `config.js` from env vars (python3 standard library only) |
-| `robots.txt` | Allows all; Sitemap line is a commented placeholder to fill in |
+| `robots.txt` | Allows all. `--publish` with `APEX_SITE_ORIGIN` replaces it with one that has the Sitemap line |
 | `tests/` | Offline tests (pytest + node, no packages) |
 
 `config.js` is generated; don't edit it by hand.
@@ -46,6 +58,8 @@ scripts, fonts, images, CDNs, analytics or trackers. The only build step writes
 | `APEX_CHECKOUT` | no | `on` (default) or `off`. `off` hides buying. |
 | `APEX_PRICE` | no | Price label shown on the page. Default `$29`. Keep it in sync with the API's `CHECKUP_PRICE_CENTS`. |
 | `APEX_SUPPORT_EMAIL` | yes | Shown on the privacy and terms pages, for refund and privacy requests. |
+| `APEX_EMAILS` | no | `on` only when the API really sends buyer emails (`MAIL_BACKEND=smtp`). Default `off`: the pages then don't promise any email. |
+| `APEX_SITE_ORIGIN` | no | https origin the site is served at, e.g. `https://apex-checkup.onrender.com`. With `--publish` it adds canonical links to the indexable pages, `sitemap.xml`, and the robots.txt Sitemap line. Unset: none of those. |
 
 `build_config.py` checks that the API URL is https and the email looks like one. If anything is wrong it prints a clear message, does not write
 `config.js`, and exits non-zero, which fails the Render build instead of publishing a
@@ -57,23 +71,30 @@ APEX_SUPPORT_EMAIL=help@example.com \
 python3 build_config.py
 
 python3 build_config.py --example   # placeholder config.js for local viewing
+python3 build_config.py --publish public   # the publishable site in ./public (what Render serves)
 ```
+
+`--publish DIR` copies only the top-level `*.html`, `*.css`, `*.js` (never `config.example.js`)
+and `robots.txt`, writes a fresh `config.js`, and with `APEX_SITE_ORIGIN` adds canonical links and
+`sitemap.xml`. Folders such as `tests/` and files such as this README are never published.
 
 ## Render static site
 
 Create a Render **Static Site** pointing at this folder:
 
 - Root directory: `selfserve/site`
-- Build command: `python3 build_config.py`
-- Publish directory: `.`
-- Environment: set `APEX_API_BASE`, `APEX_SUPPORT_EMAIL` and optionally `APEX_PRICE`, `APEX_CHECKOUT`.
+- Build command: `python3 build_config.py --publish public`
+- Publish directory: `public`
+- Environment: set `APEX_API_BASE`, `APEX_SUPPORT_EMAIL` and optionally `APEX_PRICE`, `APEX_CHECKOUT`,
+  `APEX_EMAILS`, `APEX_SITE_ORIGIN`.
 
 Render's static-site build image includes Python 3, so no install step is needed.
 Render serves `404.html` for missing paths automatically when it exists at the
 publish root. Changing an env var needs a redeploy so `config.js` is rebuilt.
 
-The API must allow CORS from the static site's origin for `/health`, `/api/check`,
-`/api/checkout`, `/api/report`, `/api/find` and `/api/refund`, and send the PDF with `Content-Disposition` so the
+The API must allow CORS from the static site's origin for `/health`, `/api/check`, `/api/plans`,
+`/api/checkout`, `/api/report`, `/api/find`, `/api/refund`, `/api/dashboard`, `/api/cancel` and
+`/api/admin/*` (the admin routes also need the `Authorization` request header allowed), and send the PDF with `Content-Disposition` so the
 Download PDF link saves a file.
 
 ## Security notes
@@ -90,7 +111,12 @@ Download PDF link saves a file.
 
 ```sh
 python3 -m pytest -q tests && node tests/test_render.mjs
+node tests/contract.mjs tests/fixtures/mini.json tests/fixtures/report-pro.json \
+  --plans=tests/fixtures/plans.json --dashboard=tests/fixtures/dashboard.json --admin=tests/fixtures/admin.json
 ```
+
+`contract.mjs` checks each API response against the shape the pages are built for, then renders
+it. The API's end-to-end test feeds it real responses; `tests/fixtures/` holds hand-written ones.
 
 The tests check HTML structure, page metadata and CSP, external URLs, inline
 scripts, `innerHTML`, `build_config.py` validation, and that hostile API strings

@@ -58,6 +58,8 @@ function serialize(n) {
   const style = Object.keys(n.style).length ? ` style="${esc(Object.entries(n.style).map(([k, v]) => `${k}:${v}`).join(";"))}"` : "";
   return `<${tag}${attrs}${style}>${n.children.map(serialize).join("")}</${tag}>`;
 }
+// our own pages, built only from a checked order id or a fixed anchor
+const SAME_SITE = /^[a-z0-9-]+\.html(\?order_id=[A-Za-z0-9_-]{10,64}|#[a-z0-9-]+)?$/;
 function walk(n, fn) { fn(n); if (n.children) n.children.forEach((c) => walk(c, fn)); }
 function assertNoInjectedMarkup(root) {
   walk(root, (n) => {
@@ -65,7 +67,7 @@ function assertNoInjectedMarkup(root) {
     assert.ok(!["IMG", "SCRIPT", "IFRAME", "SVG", "OBJECT"].includes(n.tagName), `unexpected <${n.tagName}> element`);
     for (const [k, v] of n.attributes) {
       assert.ok(!/^on/i.test(k), `event handler attribute ${k}`);
-      if (k === "href") assert.ok(/^(https:\/\/|#)/.test(v), `unsafe href ${v}`);
+      if (k === "href") assert.ok(/^(https:\/\/|#)/.test(v) || SAME_SITE.test(v), `unsafe href ${v}`);
     }
   });
 }
@@ -207,7 +209,7 @@ const calls = [];
 function mockFetch(routes) {
   calls.length = 0;
   globalThis.fetch = async (url, opts = {}) => {
-    calls.push({ url, method: opts.method || "GET", body: opts.body });
+    calls.push({ url, method: opts.method || "GET", body: opts.body, headers: opts.headers || {} });
     const key = Object.keys(routes).find((k) => url.includes(k));
     const r = key ? routes[key] : { status: 404, body: { ok: false, error: "nope" } };
     if (r === "network") throw new TypeError("Failed to fetch");
@@ -218,7 +220,7 @@ function mockFetch(routes) {
 const tick = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
 function store(init) {
   const m = new Map(Object.entries(init || {}));
-  return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), map: m };
+  return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k), map: m };
 }
 const win = (search, saved) => ({ APEX_CONFIG: { apiBase: "https://api.example.test", price: "$29" },
   location: { search, assigned: [], assign(u) { this.assigned.push(u); } },
@@ -370,7 +372,7 @@ test("index: wakes server, enables Buy, runs the free check, buys the checked si
   res.querySelector("[data-buy-checked]").click();
   await tick();
   const co = calls.find((c) => c.url.endsWith("/api/checkout"));
-  assert.deepEqual(JSON.parse(co.body), { url: "example.com" });
+  assert.deepEqual(JSON.parse(co.body), { url: "example.com", plan: "checkup" });
   assert.deepEqual(w.location.assigned, ["https://sandbox.square.link/u/AbC123"]);
   assert.equal(w.localStorage.map.get("apexLastOrder"), SID);
 });
@@ -424,6 +426,418 @@ test("index: missing config disables the form", async () => {
   A.init(d, { location: { search: "" } });
   assert.equal(calls.length, 0);
   assert.equal(d.getElementById("check-btn").disabled, true);
+});
+
+
+// ---------------------------------------------------------------- v2: plans, Pro, dashboard, admin
+const D = require("../dashboard.js");
+const AD = require("../admin.js");
+function mk(tag, attrs, text) {
+  const e = new FakeElement(tag);
+  Object.entries(attrs || {}).forEach(([k, v]) => e.setAttribute(k, v));
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+const PLANS = { ok: true, plans: [
+  { id: "checkup", label: "Website Checkup", cents: 2900, kind: "one_time", available: true },
+  { id: "pro", label: "Pro Checkup (homepage + up to 4 more pages)", cents: 7950, kind: "one_time", available: true },
+  { id: "monitor", label: "Monthly Monitoring", cents: 1900, kind: "subscription", available: false }] };
+const withMonitor = () => ({ ok: true, plans: PLANS.plans.map((p) => (p.id === "monitor" ? { ...p, available: true } : p)) });
+function pricingNodes() {
+  const n = {};
+  for (const id of ["checkup", "pro", "monitor"]) {
+    n[id] = {
+      card: mk("article", { "data-plan-card": id }),
+      price: mk("span", { "data-plan-price": id }, "fallback"),
+      btn: mk("button", id === "checkup" ? { id: "buy-btn", "data-buy-plan": id } : { "data-buy-plan": id }),
+      note: mk("p", { "data-plan-unavailable": id, hidden: "" }),
+    };
+    n[id].card.appendChild(n[id].price); n[id].card.appendChild(n[id].btn); n[id].card.appendChild(n[id].note);
+  }
+  n.monitor.card.hidden = true;
+  n.renew = mk("span", { "data-plan-price": "monitor" }, "$19");
+  n.monitor.card.appendChild(n.renew);
+  n.ifNo = mk("p", { "data-if-no-plan": "monitor", hidden: "" });
+  n.ifEmails = mk("li", { "data-if-emails": "", hidden: "" });
+  return n;
+}
+function pricingPage(n) {
+  const form = mk("form", { id: "buy-form" });
+  form.appendChild(mk("input", { id: "buy-url" }));
+  for (const id of ["checkup", "pro", "monitor"]) form.appendChild(n[id].card);
+  return page(["check-form", "site-url", "check-btn", "check-status", "check-result", "buy-status", "pay-unavailable"],
+    [form, n.ifNo, n.ifEmails, mk("section", { id: "price" })]);
+}
+
+test("money is shown as dollars from cents", () => {
+  assert.equal(C.dollars(2900), "$29");
+  assert.equal(C.dollars(7950), "$79.50");
+  assert.equal(C.dollars(1900, true), "$19.00");
+  assert.equal(C.dollars(123456789, true), "$1,234,567.89");
+  assert.equal(C.dollars(-500, true), "-$5.00");
+  assert.equal(C.dollars(5), "$0.05");
+  assert.equal(C.dollars("nope"), "");
+  assert.equal(C.dollars(null), "");
+});
+
+test("plansById keeps only well-formed plans", () => {
+  const p = C.plansById({ ok: true, plans: [...PLANS.plans, { id: "<x>", cents: 1, available: true }, null, "junk",
+    { id: "free", cents: 0, available: true }, { id: "pro", cents: 1, available: true }] });
+  assert.deepEqual(Object.keys(p).sort(), ["checkup", "free", "monitor", "pro"]);
+  assert.equal(p.pro.cents, 7950, "first entry for an id wins");
+  assert.equal(p.free.available, false, "a zero price is never available");
+  assert.equal(p.monitor.kind, "subscription");
+  assert.deepEqual(C.plansById(null), {});
+});
+
+test("pricing: prices from the API, monitor card hidden when unavailable", () => {
+  const n = pricingNodes();
+  const d = pricingPage(n);
+  const cfg2 = C.getConfig({ APEX_CONFIG: { apiBase: "https://api.example.test", price: "$29" } });
+  A.applyPlans(d, C.plansById(PLANS), cfg2);
+  assert.equal(n.checkup.price.textContent, "$29");
+  assert.equal(n.pro.price.textContent, "$79.50");
+  assert.equal(n.monitor.card.hidden, true, "monitor card stays hidden while the plan is unavailable");
+  assert.equal(n.monitor.btn.disabled, true);
+  assert.equal(n.ifNo.hidden, false, "pages that mention monitoring say it isn't open");
+  assert.equal(n.pro.btn.disabled, false);
+  assert.equal(n.checkup.btn.disabled, false);
+  A.applyPlans(d, C.plansById(withMonitor()), cfg2);
+  assert.equal(n.monitor.card.hidden, false);
+  assert.equal(n.monitor.btn.disabled, false);
+  assert.equal(n.renew.textContent, "$19", "the auto-renew line shows the real monthly price");
+  assert.equal(n.ifNo.hidden, true);
+  // the API is down: only the one-time checkup is offered, and only at the configured fallback price
+  const m = pricingNodes();
+  const d2 = pricingPage(m);
+  A.applyPlans(d2, null, cfg2);
+  assert.equal(m.checkup.btn.disabled, false);
+  assert.equal(m.pro.btn.disabled, true);
+  assert.equal(m.pro.note.hidden, false);
+  assert.equal(m.pro.price.textContent, "fallback");
+  assert.equal(m.monitor.card.hidden, true);
+  // checkout switched off: nothing can be bought, prices still shown
+  const off = C.getConfig({ APEX_CONFIG: { apiBase: "https://api.example.test", checkout: false } });
+  const o = pricingNodes();
+  A.applyPlans(pricingPage(o), C.plansById(withMonitor()), off);
+  assert.ok(["checkup", "pro", "monitor"].every((id) => o[id].btn.disabled));
+  assert.equal(o.pro.price.textContent, "$79.50");
+});
+
+test("index: each plan button sends its plan to checkout", async () => {
+  mockFetch({ "/health": { status: 200, body: {} }, "/api/plans": { status: 200, body: withMonitor() },
+    "/api/checkout": [CHECKOUT, CHECKOUT, CHECKOUT] });
+  const n = pricingNodes();
+  const d = pricingPage(n);
+  const w = win("");
+  A.init(d, w);
+  assert.equal(n.pro.btn.disabled, true, "Pro waits for /api/plans");
+  await tick();
+  assert.ok(calls.some((c) => c.url === "https://api.example.test/api/plans" && c.method === "GET"));
+  assert.equal(n.pro.btn.disabled, false);
+  assert.equal(n.monitor.card.hidden, false);
+  // no website yet: a clear message, no checkout
+  n.pro.btn.click();
+  await tick();
+  assert.match(d.getElementById("buy-status").textContent, /Type your website address above first/);
+  assert.equal(calls.filter((c) => c.url.endsWith("/api/checkout")).length, 0);
+  d.getElementById("buy-url").value = "roof.example";
+  n.pro.btn.click();
+  await tick();
+  n.monitor.btn.click();
+  await tick();
+  d.getElementById("buy-form").submit();
+  await tick();
+  const bodies = calls.filter((c) => c.url.endsWith("/api/checkout")).map((c) => JSON.parse(c.body));
+  assert.deepEqual(bodies, [{ url: "roof.example", plan: "pro" }, { url: "roof.example", plan: "monitor" }, { url: "roof.example", plan: "checkup" }]);
+  assert.equal(w.location.assigned.length, 3);
+});
+
+test("index: plans request failing keeps monitor hidden and Pro off", async () => {
+  mockFetch({ "/health": { status: 200, body: {} }, "/api/plans": "network" });
+  const n = pricingNodes();
+  A.init(pricingPage(n), win(""));
+  await tick();
+  assert.equal(n.monitor.card.hidden, true);
+  assert.equal(n.pro.btn.disabled, true);
+  assert.equal(n.checkup.btn.disabled, false);
+  assert.equal(n.ifEmails.hidden, true, "emails aren't mentioned unless APEX_EMAILS is on");
+  mockFetch({ "/health": { status: 200, body: {} }, "/api/plans": { status: 404, body: { ok: false } } });
+  const m = pricingNodes();
+  const w = win(""); w.APEX_CONFIG.emails = true;
+  A.init(pricingPage(m), w);
+  await tick();
+  assert.equal(m.monitor.card.hidden, true);
+  assert.equal(m.ifEmails.hidden, false);
+});
+
+test("startCheckout refuses a malformed plan without a request", async () => {
+  mockFetch({});
+  const r = await C.startCheckout(win(""), cfg, "example.com", "<pro>");
+  assert.equal(r.ok, false);
+  assert.equal(calls.length, 0);
+});
+
+test("mini-check on a landing page links to the home page plans", () => {
+  const node = A.renderMiniResult(doc, { ok: true, site: "example.com", score: 70, grade: "C", top: [] }, cfg, { pricingHref: "index.html#price" });
+  const html = serialize(node);
+  assertNoInjectedMarkup(node);
+  assert.ok(html.includes('href="index.html#price"'));
+  const bad = A.renderMiniResult(doc, { ok: true, site: "x", top: [] }, cfg, { pricingHref: "javascript:alert(1)" });
+  assert.ok(serialize(bad).includes('href="#price"'));
+});
+
+const PRO_PAGES = [
+  { url: "https://roof.example/about", path: "/about", title: EVIL, passed: 7, not_measured: [],
+    issues: [{ id: "p.meta", title: EVIL, severity: "MAJOR", detail: EVIL }, { id: "p.h1", title: "2 H1 elements", severity: "MINOR", detail: "found 2" }] },
+  { url: "https://roof.example/contact", path: "/contact", title: "Contact", passed: 9, issues: [], not_measured: ["broken or redirecting page"] },
+  { url: "https://roof.example/x", path: "/x", issues: [], passed: 0, not_measured: ["the time limit cut this page short"] },
+  null, "junk",
+];
+
+test("report: Pro pages render as text, not part of the grade", () => {
+  const data = { ...REPORT, report: { ...REPORT.report, pages: PRO_PAGES } };
+  const node = R.renderReport(doc, data, cfg, SID);
+  const html = serialize(node);
+  assertNoInjectedMarkup(node);
+  assert.ok(!html.includes("<img"));
+  assert.ok(html.includes("Pages checked (3)"));
+  assert.ok(html.includes("not part of the grade"));
+  assert.ok(html.includes(">/about<") && html.includes(">/contact<"));
+  assert.ok(html.includes("Page title: &lt;img"));
+  assert.ok(html.includes("2 H1 elements") && html.includes(" — found 2"));
+  assert.ok(html.includes("7 checks passed"));
+  assert.ok(html.includes("not measured: the time limit cut this page short"));
+  assert.ok(html.includes("No problems found in what could be measured on this page."));
+  assert.ok(html.includes('class="sev sev-high"'), "MAJOR maps to high");
+  const plain = serialize(R.renderReport(doc, REPORT, cfg, SID));
+  assert.ok(!plain.includes("Pages checked"), "no pages section for a non-Pro report");
+});
+
+test("report links to the order's dashboard", () => {
+  const html = serialize(R.renderReport(doc, REPORT, cfg, SID));
+  assert.ok(html.includes('href="dashboard.html?order_id=' + SID + '"'));
+  assert.ok(!serialize(R.renderReport(doc, REPORT, cfg, "bad id")).includes("dashboard.html"));
+});
+
+test("find page also links each report's dashboard", () => {
+  const F = require("../find.js");
+  const d = page(["find-result"]);
+  F.renderMatches(d, d.getElementById("find-result"), { reports: [{ site: "roof.com", created: 1700000000, path: "report.html?order_id=" + SID }] });
+  assert.ok(serialize(d.getElementById("find-result")).includes('href="dashboard.html?order_id=' + SID + '"'));
+});
+
+const DASH = { ok: true, site: "roof.example", plan: "monitor", report_path: "report.html?order_id=" + SID,
+  subscription: { id: "sub_1", status: "ACTIVE", start_date: "2026-10-26", charged_through_date: "2026-12-26", canceled_date: null },
+  history: [{ at: "2026-11-26T09:00:00Z", grade: "B", score: 81 }, { at: "2026-10-26T09:00:00Z", grade: "C", score: 70 }],
+  latest_changes: { score_change: 11, new_problems: ["No DMARC email record"], fixed: ["Slow server", "No tap-to-call button"] } };
+
+test("dashboard renders plan, report link, history, changes and status as text", () => {
+  const hostile = { ...DASH, site: EVIL, report_path: "javascript:alert(1)", plan: EVIL,
+    subscription: { ...DASH.subscription, status: EVIL }, history: [{ at: EVIL, grade: EVIL, score: EVIL }, null],
+    latest_changes: { score_change: EVIL, new_problems: [EVIL, 5, null], fixed: "junk" } };
+  const node = D.renderDashboard(doc, hostile, SID);
+  const html = serialize(node);
+  assertNoInjectedMarkup(node);
+  assert.ok(!html.includes("<img") && !html.includes("javascript:"));
+  assert.ok(html.includes('href="report.html?order_id=' + SID + '"'), "falls back to the order's own report link");
+  assert.ok(html.includes("Website Checkup"), "unknown plan is shown as a one-time checkup");
+  assert.ok(!html.includes("Cancel monitoring"));
+  const good = serialize(D.renderDashboard(doc, DASH, SID));
+  assert.ok(good.includes("Monthly Monitoring") && good.includes("roof.example"));
+  assert.ok(good.includes("Score: +11 points"));
+  assert.ok(good.includes("New problems (1)") && good.includes("No DMARC email record") && good.includes("Fixed (2)"));
+  assert.ok(good.includes(">B<") && good.includes("81/100") && good.includes("70/100"));
+  assert.ok(good.includes(">Active<") && good.includes("Paid through"));
+  assert.ok(good.includes("Cancel monitoring") && good.includes('data-action="cancel-start"'));
+  assert.ok(good.includes("can be lost when the server is updated"), "history is described as best-effort");
+  const one = serialize(D.renderDashboard(doc, { ...DASH, plan: "checkup", subscription: null, latest_changes: null }, SID));
+  assert.ok(one.includes("nothing to cancel") && !one.includes("cancel-start"));
+  const gone = serialize(D.renderDashboard(doc, { ...DASH, subscription: { ...DASH.subscription, canceled_date: "2026-11-20" } }, SID));
+  assert.ok(gone.includes("(cancelled)") && !gone.includes("cancel-start"), "a cancelled subscription can't be cancelled again");
+  const unknown = serialize(D.renderDashboard(doc, { ...DASH, subscription: null }, SID));
+  assert.ok(unknown.includes("couldn't read your subscription"));
+});
+
+test("dashboard page: bad order id makes no request", async () => {
+  mockFetch({});
+  const d = page(["dash-status", "dash-root"]);
+  D.init(d, win("?order_id=../x"));
+  await tick();
+  assert.equal(calls.length, 0);
+  assert.match(d.getElementById("dash-status").textContent, /missing its order reference/);
+});
+
+test("dashboard page: cancel asks in the page first, then cancels and says when it ends", async () => {
+  mockFetch({ "/api/dashboard?": { status: 200, body: DASH },
+    "/api/cancel": [{ status: 502, body: { ok: false, error: EVIL } }, { status: 200, body: { ok: true, status: "ACTIVE", ends: "2026-12-26" } }] });
+  const d = page(["dash-status", "dash-root"]);
+  const w = win("?order_id=" + SID);
+  w.confirm = () => { throw new Error("window.confirm must not be used"); };
+  D.init(d, w);
+  await tick();
+  assert.equal(calls[0].url, "https://api.example.test/api/dashboard?order_id=" + SID);
+  assert.match(d.title, /roof\.example/);
+  const root = d.getElementById("dash-root");
+  const start = root.querySelector('[data-action="cancel-start"]');
+  const panel = root.querySelector('[role="group"]');
+  assert.equal(panel.hidden, true);
+  start.click();
+  assert.equal(panel.hidden, false);
+  assert.equal(start.getAttribute("aria-expanded"), "true");
+  assert.equal(focused, panel.querySelector("h3"), "focus moves to the question");
+  assert.match(panel.textContent, /stays on until .*2026/);
+  root.querySelector('[data-action="cancel-keep"]').click();
+  assert.equal(panel.hidden, true);
+  assert.equal(calls.filter((c) => c.url.endsWith("/api/cancel")).length, 0, "nothing is cancelled without confirming");
+  start.click();
+  const yes = root.querySelector('[data-action="cancel-confirm"]');
+  yes.click();
+  await tick();
+  const st = root.querySelector("[data-cancel-status]");
+  assert.equal(st.textContent, EVIL);
+  assert.equal(yes.disabled, false, "a failed cancel can be retried");
+  yes.click();
+  await tick();
+  const cancels = calls.filter((c) => c.url.endsWith("/api/cancel"));
+  assert.equal(cancels.length, 2);
+  assert.equal(cancels[1].method, "POST");
+  assert.deepEqual(JSON.parse(cancels[1].body), { order_id: SID });
+  assert.match(st.textContent, /^Monitoring is cancelled\. Monitoring stays on until .*2026\. You won't be charged again\.$/);
+  assert.equal(start.hidden, true);
+  assert.equal(panel.hidden, true);
+});
+
+test("dashboard page: API error offers Try again", async () => {
+  mockFetch({ "/api/dashboard?": { status: 404, body: { ok: false, error: "We couldn't find that order." } } });
+  const d = page(["dash-status", "dash-root"]);
+  D.init(d, win("?orderId=" + SID));
+  await tick();
+  assert.equal(d.getElementById("dash-status").textContent, "We couldn't find that order.");
+  assert.equal(d.getElementById("dash-root").querySelector("button").textContent, "Try again");
+});
+
+const SUMMARY = { ok: true, days: 30, orders: 12, gross_cents: 52800, refunded_cents: 2900, net_cents: 49900,
+  by_plan: { checkup: { count: 7, gross_cents: 20300 }, pro: { count: 3, gross_cents: 23700 }, monitor: { count: 2, gross_cents: 3800 } },
+  active_subscriptions: 2, mrr_cents: 3800,
+  recent: [{ created: "2026-11-25T10:00:00Z", plan: "pro", amount_cents: 7900, site: "roof.example", refunded: false },
+           { created: 1764000000, plan: "checkup", amount_cents: 2900, site: EVIL, refunded: true }],
+  counters: { free_checks: 140, checkouts_started: 20, reports_delivered: 11 },
+  monitoring: { last_run_at: "2026-11-26T06:00:00Z", checked: 2, emailed: 2, errors: 0 } };
+const TOKEN = "t0k3n-THAT-is-long-enough-for-admin-123";
+
+test("admin summary renders money from cents and hostile strings as text", () => {
+  const node = AD.renderSummary(doc, SUMMARY);
+  const html = serialize(node);
+  assertNoInjectedMarkup(node);
+  assert.ok(!html.includes("<img"));
+  for (const t of ["$499.00", "$528.00", "$29.00", "$38.00", ">12<", ">140<", "Pro Checkup", "$237.00", "roof.example", ">Yes<", "the last 30 days"]) {
+    assert.ok(html.includes(t), t);
+  }
+  assert.ok(html.includes("Checkouts started 20, reports delivered 11"));
+  assert.ok(html.includes("Sites checked") && html.includes(">2<"));
+  const empty = serialize(AD.renderSummary(doc, { ok: true, monitoring: null, recent: "junk", by_plan: null }));
+  assert.ok(empty.includes("No sales in this period.") && empty.includes("No monitoring run recorded"));
+  assert.ok(empty.includes("—"), "missing numbers show a dash, not 0");
+});
+
+function adminPage() {
+  const input = mk("input", { id: "admin-token" });
+  const days = mk("select", { id: "admin-days" }); days.value = "30";
+  const bar = mk("div", { id: "admin-bar", hidden: "" });
+  [days, mk("button", { id: "admin-refresh" }), mk("button", { id: "admin-run" }), mk("button", { id: "admin-logout" })].forEach((b) => bar.appendChild(b));
+  return page(["admin-status", "admin-root"], [mk("form", { id: "admin-login" }), input, mk("button", { id: "admin-login-btn" }), bar]);
+}
+function adminWin() {
+  const w = win("");
+  w.sessionStorage = store();
+  return w;
+}
+
+test("admin: token goes to sessionStorage only and is sent as a Bearer header", async () => {
+  mockFetch({ "/api/admin/summary": { status: 200, body: SUMMARY }, "/api/admin/run-monitoring": [{ status: 202, body: { ok: true, started: true } }, { status: 409, body: { ok: false } }] });
+  const d = adminPage();
+  const w = adminWin();
+  AD.init(d, w);
+  await tick();
+  assert.equal(calls.length, 0, "nothing is requested before a token is given");
+  d.getElementById("admin-token").value = "  " + TOKEN + " ";
+  d.getElementById("admin-login").submit();
+  await tick();
+  assert.equal(d.getElementById("admin-token").value, "", "the token is cleared from the field");
+  assert.equal(w.sessionStorage.map.get("apexAdminToken"), TOKEN);
+  assert.equal(w.localStorage.map.size, 0, "never in localStorage");
+  const c = calls[0];
+  assert.equal(c.url, "https://api.example.test/api/admin/summary?days=30");
+  assert.equal(c.headers.Authorization, "Bearer " + TOKEN);
+  assert.equal(d.getElementById("admin-login").hidden, true);
+  assert.equal(d.getElementById("admin-bar").hidden, false);
+  assert.match(d.getElementById("admin-root").textContent, /\$499\.00/);
+  d.getElementById("admin-days").value = "90";
+  d.getElementById("admin-refresh").click();
+  await tick();
+  assert.equal(calls[1].url, "https://api.example.test/api/admin/summary?days=90");
+  d.getElementById("admin-run").click();
+  await tick();
+  const run = calls.find((x) => x.url.endsWith("/api/admin/run-monitoring"));
+  assert.equal(run.method, "POST");
+  assert.equal(run.headers.Authorization, "Bearer " + TOKEN);
+  assert.match(d.getElementById("admin-status").textContent, /Monitoring run started/);
+  d.getElementById("admin-run").click();
+  await tick();
+  assert.match(d.getElementById("admin-status").textContent, /already going/);
+  // the token never shows up in a URL, the page, history or localStorage
+  for (const x of calls) assert.ok(!x.url.includes(TOKEN));
+  assert.ok(!d.body.textContent.includes(TOKEN));
+  assert.deepEqual(w.history.replaced, []);
+  assert.deepEqual(w.location.assigned, []);
+  d.getElementById("admin-logout").click();
+  assert.equal(w.sessionStorage.map.has("apexAdminToken"), false, "log out removes the token");
+  assert.equal(d.getElementById("admin-login").hidden, false);
+  assert.equal(d.getElementById("admin-root").children.length, 0);
+});
+
+test("admin: a rejected token is removed and the form comes back", async () => {
+  mockFetch({ "/api/admin/summary": { status: 401, body: { ok: false, error: EVIL } } });
+  const d = adminPage();
+  const w = adminWin();
+  w.sessionStorage.setItem("apexAdminToken", TOKEN);   // from earlier in this tab
+  AD.init(d, w);
+  await tick();
+  assert.equal(calls[0].headers.Authorization, "Bearer " + TOKEN);
+  assert.equal(w.sessionStorage.map.has("apexAdminToken"), false);
+  assert.equal(d.getElementById("admin-login").hidden, false);
+  assert.match(d.getElementById("admin-status").textContent, /wasn't accepted/);
+  // a token with spaces or control characters is refused without a request
+  mockFetch({});
+  d.getElementById("admin-token").value = "two words";
+  d.getElementById("admin-login").submit();
+  await tick();
+  assert.equal(calls.length, 0);
+  assert.match(d.getElementById("admin-status").textContent, /no spaces/);
+});
+
+test("admin: switched-off admin and blocked sessionStorage", async () => {
+  mockFetch({ "/api/admin/summary": { status: 404, body: { ok: false } } });
+  const d = adminPage();
+  const w = win("");
+  Object.defineProperty(w, "sessionStorage", { get() { throw new Error("blocked"); } });
+  AD.init(d, w);
+  d.getElementById("admin-token").value = TOKEN;
+  d.getElementById("admin-login").submit();
+  await tick();
+  assert.equal(calls[0].headers.Authorization, "Bearer " + TOKEN, "falls back to page memory, not localStorage");
+  assert.equal(w.localStorage.map.size, 0);
+  assert.match(d.getElementById("admin-status").textContent, /switched off/);
+});
+
+test("admin: if sessionStorage can't remove the token, it is blanked instead", () => {
+  const m = new Map([["apexAdminToken", TOKEN]]);
+  const ts = AD.tokenStore({ sessionStorage: { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, v), removeItem() { throw new Error("no"); } } });
+  assert.equal(ts.get(), TOKEN);
+  ts.clear();
+  assert.equal(ts.get(), "");
+  assert.equal(m.get("apexAdminToken"), "");
 });
 
 let passed = 0;
