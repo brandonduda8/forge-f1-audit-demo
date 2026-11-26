@@ -237,6 +237,9 @@
     }
     root.appendChild(ns);
 
+    // Monthly Monitoring: the renewal terms, printable with the report
+    if (data.plan === "monitor") root.appendChild(C.renewalTerms(doc, orderId, null));
+
     root.appendChild(el(doc, "p", {
       className: "muted small",
       text: "Every finding above is an automated measurement of your live site at the time shown. " +
@@ -327,6 +330,9 @@
             Array.prototype.forEach.call(out.querySelectorAll('[data-action="print"]'), function (b) {
               b.addEventListener("click", function () { win.print(); });
             });
+            if (d.plan === "monitor") {
+              C.loadPlans(cfg).then(function (plans) { if (plans && plans.monitor) C.fillRenewalPrice(out, plans.monitor); });
+            }
             if (d.site) doc.title = "Report for " + C.str(d.site, 100) + " — Apex Forge Website Checkup";
             var h1 = out.querySelector("h1");
             if (h1) { h1.setAttribute("tabindex", "-1"); h1.focus(); }

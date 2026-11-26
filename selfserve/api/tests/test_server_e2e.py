@@ -338,7 +338,7 @@ def test_site_renders_real_api_output(stack, tmp_path):
     mini.write_text(json.dumps(stack["mini_json"]))
     rep.write_text(json.dumps(stack["report_json"]))
     site_tests = os.path.join(API, "..", "site", "tests")
-    p = subprocess.run(["node", os.path.join(site_tests, "contract.mjs"), str(mini), str(rep)],
+    p = subprocess.run(["node", os.path.join(site_tests, "contract.mjs"), str(mini), str(rep), "--admin=" + os.path.join(site_tests, "fixtures", "admin.json"), "--dashboard=" + os.path.join(site_tests, "fixtures", "dashboard.json")],
                        capture_output=True, text=True, timeout=60)
     assert p.returncode == 0, p.stdout + p.stderr
     print(p.stdout)

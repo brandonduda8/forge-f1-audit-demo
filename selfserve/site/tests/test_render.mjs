@@ -2,6 +2,7 @@
 // report.js / app.js with a tiny fake DOM and checks hostile API strings stay text.
 import { createRequire } from "node:module";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 
 const require = createRequire(import.meta.url);
 const C = require("../common.js");
@@ -627,15 +628,14 @@ test("find page also links each report's dashboard", () => {
   assert.ok(serialize(d.getElementById("find-result")).includes('href="dashboard.html?order_id=' + SID + '"'));
 });
 
-const DASH = { ok: true, site: "roof.example", plan: "monitor", report_path: "report.html?order_id=" + SID,
-  subscription: { id: "sub_1", status: "ACTIVE", start_date: "2026-10-26", charged_through_date: "2026-12-26", canceled_date: null },
-  history: [{ at: "2026-11-26T09:00:00Z", grade: "B", score: 81 }, { at: "2026-10-26T09:00:00Z", grade: "C", score: 70 }],
-  latest_changes: { score_change: 11, new_problems: ["No DMARC email record"], fixed: ["Slow server", "No tap-to-call button"] } };
+// Real-shaped responses (copied from server.dashboard / server.admin_summary / monitor.diff), shared with contract.mjs.
+const fixture = (name) => JSON.parse(fs.readFileSync(new URL("./fixtures/" + name, import.meta.url), "utf8"));
+const DASH = fixture("dashboard.json");
 
 test("dashboard renders plan, report link, history, changes and status as text", () => {
   const hostile = { ...DASH, site: EVIL, report_path: "javascript:alert(1)", plan: EVIL,
     subscription: { ...DASH.subscription, status: EVIL }, history: [{ at: EVIL, grade: EVIL, score: EVIL }, null],
-    latest_changes: { score_change: EVIL, new_problems: [EVIL, 5, null], fixed: "junk" } };
+    latest_changes: { score_change: EVIL, new: [{ id: EVIL, title: EVIL, severity: EVIL }, 5, null], fixed: "junk", since: EVIL } };
   const node = D.renderDashboard(doc, hostile, SID);
   const html = serialize(node);
   assertNoInjectedMarkup(node);
@@ -647,7 +647,11 @@ test("dashboard renders plan, report link, history, changes and status as text",
   assert.ok(good.includes("Monthly Monitoring") && good.includes("roof.example"));
   assert.ok(good.includes("Score: +11 points"));
   assert.ok(good.includes("New problems (1)") && good.includes("No DMARC email record") && good.includes("Fixed (2)"));
+  assert.ok(good.includes("Slow server response") && good.includes('class="sev sev-critical"'), "changes show title and severity");
+  assert.ok(good.includes("Grade: C before, B now"));
   assert.ok(good.includes(">B<") && good.includes("81/100") && good.includes("70/100"));
+  assert.ok(good.includes(C.formatWhen(DASH.history[0].at)) && !good.includes("1795731516"), "epoch-second dates are shown as dates");
+  assert.ok(!good.includes("unknown date"));
   assert.ok(good.includes(">Active<") && good.includes("Paid through"));
   assert.ok(good.includes("Cancel monitoring") && good.includes('data-action="cancel-start"'));
   assert.ok(good.includes("can be lost when the server is updated"), "history is described as best-effort");
@@ -655,6 +659,7 @@ test("dashboard renders plan, report link, history, changes and status as text",
   assert.ok(one.includes("nothing to cancel") && !one.includes("cancel-start"));
   const gone = serialize(D.renderDashboard(doc, { ...DASH, subscription: { ...DASH.subscription, canceled_date: "2026-11-20" } }, SID));
   assert.ok(gone.includes("(cancelled)") && !gone.includes("cancel-start"), "a cancelled subscription can't be cancelled again");
+  assert.ok(gone.includes("Ends on") && !gone.includes("Cancelled on"), "the end date is labelled Ends on");
   const unknown = serialize(D.renderDashboard(doc, { ...DASH, subscription: null }, SID));
   assert.ok(unknown.includes("couldn't read your subscription"));
 });
@@ -717,13 +722,15 @@ test("dashboard page: API error offers Try again", async () => {
   assert.equal(d.getElementById("dash-root").querySelector("button").textContent, "Try again");
 });
 
-const SUMMARY = { ok: true, days: 30, orders: 12, gross_cents: 52800, refunded_cents: 2900, net_cents: 49900,
-  by_plan: { checkup: { count: 7, gross_cents: 20300 }, pro: { count: 3, gross_cents: 23700 }, monitor: { count: 2, gross_cents: 3800 } },
-  active_subscriptions: 2, mrr_cents: 3800,
-  recent: [{ created: "2026-11-25T10:00:00Z", plan: "pro", amount_cents: 7900, site: "roof.example", refunded: false },
-           { created: 1764000000, plan: "checkup", amount_cents: 2900, site: EVIL, refunded: true }],
-  counters: { free_checks: 140, checkouts_started: 20, reports_delivered: 11 },
-  monitoring: { last_run_at: "2026-11-26T06:00:00Z", checked: 2, emailed: 2, errors: 0 } };
+const SUMMARY = { ok: true,
+  counters: { free_checks: 140, checkouts_started: 20, reports_delivered: 11, since: 1795600000.5 },
+  monitoring: { running: false, last_run: { started: 1795731516.4, finished: 1795731581.9,
+    counts: { sites: 2, scanned: 2, skipped_recent: 0, not_checked: 0, emails_sent: 2, emails_skipped: 0 } } },
+  sales: { days: 30, orders: 12, gross_cents: 52800, refunded_cents: 2900, net_cents: 49900,
+    by_plan: { checkup: { count: 7, gross_cents: 20300 }, pro: { count: 3, gross_cents: 23700 }, monitor: { count: 2, gross_cents: 3800 } },
+    active_subscriptions: 2, cancelling: 1, mrr_cents: 3800, truncated: false,
+    recent: [{ created: "2026-11-25T10:00:00Z", plan: "pro", amount_cents: 7900, site: "roof.example", refunded: false },
+             { created: 1764000000, plan: "checkup", amount_cents: 2900, site: EVIL, refunded: true }] } };
 const TOKEN = "t0k3n-THAT-is-long-enough-for-admin-123";
 
 test("admin summary renders money from cents and hostile strings as text", () => {
@@ -735,9 +742,11 @@ test("admin summary renders money from cents and hostile strings as text", () =>
     assert.ok(html.includes(t), t);
   }
   assert.ok(html.includes("Checkouts started 20, reports delivered 11"));
-  assert.ok(html.includes("Sites checked") && html.includes(">2<"));
-  const empty = serialize(AD.renderSummary(doc, { ok: true, monitoring: null, recent: "junk", by_plan: null }));
-  assert.ok(empty.includes("No sales in this period.") && empty.includes("No monitoring run recorded"));
+  assert.ok(html.includes("Monitored sites") && html.includes("Emails sent") && html.includes(">2<"));
+  assert.ok(html.includes("1 more cancelled, ending at the end of their paid month"), "cancelling subscriptions are shown");
+  assert.ok(!html.includes("incomplete"), "no truncation warning when not truncated");
+  const empty = serialize(AD.renderSummary(doc, { ok: true, monitoring: null, sales: { recent: "junk", by_plan: null } }));
+  assert.ok(empty.includes("No sales in this period.") && empty.includes("No monitoring run is recorded"));
   assert.ok(empty.includes("—"), "missing numbers show a dash, not 0");
 });
 
@@ -838,6 +847,224 @@ test("admin: if sessionStorage can't remove the token, it is blanked instead", (
   ts.clear();
   assert.equal(ts.get(), "");
   assert.equal(m.get("apexAdminToken"), "");
+});
+
+// ---------------------------------------------------------------- review fixes (round 1)
+const L = require("../legal.js");
+const F2 = require("../find.js");
+const MON = { id: "monitor", label: "Monthly Monitoring", cents: 1900, first_cents: 2900, kind: "subscription", available: true };
+
+test("two-phase monitoring price text comes from first_cents and cents", () => {
+  const p = C.plansById({ ok: true, plans: [MON, { id: "checkup", cents: 2900, kind: "one_time", available: true }] });
+  assert.equal(p.monitor.first_cents, 2900);
+  assert.equal(C.priceText(p.monitor), "$29 for the first month, then $19 a month");
+  assert.equal(C.priceText({ ...p.monitor, first_cents: null }), "$19 a month", "no first-month price: just the monthly one");
+  assert.equal(C.priceText({ ...p.monitor, first_cents: 1900 }), "$19 a month", "same price twice reads as one");
+  assert.equal(C.priceText(p.checkup), "$29");
+  assert.equal(C.priceText(null), "");
+  assert.equal(C.plansById({ plans: [{ ...MON, first_cents: "<b>" }] }).monitor.first_cents, null);
+});
+
+test("pricing: monitor card and auto-renew line show both prices", () => {
+  const n = pricingNodes();
+  const first = mk("span", { "data-plan-first-price": "monitor" }, "x");
+  const terms = mk("span", { "data-plan-terms": "monitor" }, "fallback terms");
+  n.monitor.card.appendChild(first); n.monitor.card.appendChild(terms);
+  const d = pricingPage(n);
+  const plans = { ok: true, plans: PLANS.plans.map((p) => (p.id === "monitor" ? { ...p, first_cents: 2900, available: true } : p)) };
+  A.applyPlans(d, C.plansById(plans), cfg);
+  assert.equal(first.textContent, "$29");
+  assert.equal(n.renew.textContent, "$19");
+  assert.equal(terms.textContent, "$29 for the first month, then $19 a month");
+  // the API is down: the page's own fallback text stays
+  const m = pricingNodes();
+  const t2 = mk("span", { "data-plan-terms": "monitor" }, "fallback terms");
+  m.monitor.card.appendChild(t2);
+  A.applyPlans(pricingPage(m), null, cfg);
+  assert.equal(t2.textContent, "fallback terms");
+});
+
+test("index: plan buttons come back on pageshow from the back/forward cache", async () => {
+  mockFetch({ "/health": { status: 200, body: {} },
+    "/api/plans": { status: 200, body: { ok: true, plans: PLANS.plans.map((p) => (p.id === "monitor" ? { ...p, first_cents: 2900, available: true } : p)) } },
+    "/api/checkout": [CHECKOUT] });
+  const n = pricingNodes();
+  const d = pricingPage(n);
+  const w = win("");
+  w.listeners = {};
+  w.addEventListener = (type, fn) => { (w.listeners[type] ||= []).push(fn); };
+  A.init(d, w);
+  await tick();
+  d.getElementById("buy-url").value = "roof.example";
+  n.monitor.btn.click();
+  await tick();
+  assert.equal(w.location.assigned.length, 1, "went to Square");
+  assert.equal(n.monitor.btn.disabled, true, "the pressed button stays off while leaving");
+  assert.match(d.getElementById("buy-status").textContent, /Opening the secure checkout/);
+  w.listeners.pageshow.forEach((fn) => fn({ persisted: false }));
+  assert.equal(n.monitor.btn.disabled, true, "a normal page load changes nothing");
+  w.listeners.pageshow.forEach((fn) => fn({ persisted: true }));
+  assert.equal(n.monitor.btn.disabled, false, "back from checkout: the button works again");
+  assert.equal(n.pro.btn.disabled, false);
+  assert.equal(d.getElementById("buy-status").hidden, true, "the stale 'Opening…' message is gone");
+  // a plan that isn't available stays off after pageshow
+  mockFetch({ "/health": { status: 200, body: {} }, "/api/plans": { status: 200, body: PLANS } });
+  const m = pricingNodes();
+  const d2 = pricingPage(m);
+  const w2 = win(""); w2.listeners = {}; w2.addEventListener = (t, fn) => { (w2.listeners[t] ||= []).push(fn); };
+  A.init(d2, w2);
+  await tick();
+  w2.listeners.pageshow.forEach((fn) => fn({ persisted: true }));
+  assert.equal(m.monitor.btn.disabled, true);
+  assert.equal(m.checkup.btn.disabled, false);
+});
+
+test("find page: with emails on, the answer says the links were emailed and shows none", async () => {
+  mockFetch({ "/api/find": { status: 200, body: { ok: true, emailed: true } } });
+  const form = mk("form", { id: "find-form" });
+  const email = mk("input", { id: "find-email" }); email.value = "owner@example.com";
+  const site = mk("input", { id: "find-site" }); site.value = "roof.example";
+  const d = page(["find-status", "find-result"], [form, email, site, mk("button", { id: "find-btn" })]);
+  F2.init(d, win(""));
+  form.submit();
+  await tick();
+  assert.equal(calls[0].method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].body), { email: "owner@example.com", website: "roof.example" });
+  const st = d.getElementById("find-status");
+  assert.equal(st.textContent, F2.EMAILED_MESSAGE);
+  assert.match(st.textContent, /We've emailed the links to that address if we found any/);
+  assert.ok(!/error/.test(st.className), "not shown as an error");
+  assert.equal(d.getElementById("find-result").hidden, true);
+  assert.equal(d.getElementById("find-btn").disabled, false);
+  // emails off: links in the response, as before
+  mockFetch({ "/api/find": { status: 200, body: { ok: true, reports: [{ site: "roof.example", created: 1795731516, path: "report.html?order_id=" + SID }] } } });
+  form.submit();
+  await tick();
+  assert.match(st.textContent, /Found it/);
+  assert.ok(serialize(d.getElementById("find-result")).includes("dashboard.html?order_id=" + SID));
+});
+
+test("renewal terms: printable block on the dashboard and report, only for monitoring", () => {
+  const dash = D.renderDashboard(doc, DASH, SID);
+  const html = serialize(dash);
+  assertNoInjectedMarkup(dash);
+  const block = dash.querySelector("[data-renewal-terms]");
+  assert.ok(block, "monitor dashboard has the renewal terms");
+  const t = block.textContent;
+  for (const words of ["first-month price", "renews automatically every month", "until you cancel", "Cancel online anytime from your dashboard",
+    "end of the month you've already paid for", "Terms page"]) assert.ok(t.includes(words), words);
+  assert.ok(serialize(block).includes('href="terms.html#monitoring"') && serialize(block).includes('href="dashboard.html?order_id=' + SID + '"'));
+  assert.ok(!/no-print/.test(block.className), "the terms print with the page");
+  C.fillRenewalPrice(dash, C.plansById({ plans: [MON] }).monitor);
+  assert.match(block.textContent, /Price: \$29 for the first month, then \$19 a month\. The first month includes the full report\./);
+  assert.ok(html.includes('data-action="print"'));
+  for (const plan of ["checkup", "pro"]) {
+    const one = D.renderDashboard(doc, { ...DASH, plan, subscription: null, latest_changes: null }, SID);
+    assert.equal(one.querySelector("[data-renewal-terms]"), null, plan + " has no renewal terms");
+  }
+  const rep = R.renderReport(doc, { ...REPORT, plan: "monitor" }, cfg, SID);
+  assert.ok(rep.querySelector("[data-renewal-terms]"), "monitor report page has the renewal terms");
+  assertNoInjectedMarkup(rep);
+  for (const plan of [undefined, "checkup", "pro", EVIL]) {
+    assert.equal(R.renderReport(doc, { ...REPORT, plan }, cfg, SID).querySelector("[data-renewal-terms]"), null, String(plan));
+  }
+});
+
+test("report page: monitor order fills the renewal price from /api/plans", async () => {
+  mockFetch({ "/api/report?": { status: 200, body: { ...REPORT, plan: "monitor" } }, "/api/plans": { status: 200, body: { ok: true, plans: [MON] } } });
+  const d = page(["report-status", "report-root"]);
+  R.init(d, win("?order_id=" + SID));
+  await tick();
+  assert.ok(calls.some((c) => c.url.endsWith("/api/plans")));
+  assert.match(d.getElementById("report-root").querySelector("[data-renewal-price]").textContent, /\$29 for the first month, then \$19 a month/);
+  mockFetch({ "/api/report?": { status: 200, body: REPORT } });
+  const d2 = page(["report-status", "report-root"]);
+  R.init(d2, win("?order_id=" + SID));
+  await tick();
+  assert.ok(!calls.some((c) => c.url.endsWith("/api/plans")), "one-time reports don't ask for prices");
+});
+
+test("dashboard page: after cancelling, the Monitoring section updates in place", async () => {
+  mockFetch({ "/api/dashboard?": { status: 200, body: JSON.parse(JSON.stringify(DASH)) }, "/api/plans": { status: 200, body: { ok: true, plans: [MON] } },
+    "/api/cancel": { status: 200, body: { ok: true, status: "ACTIVE", ends: "2026-12-26" } } });
+  const d = page(["dash-status", "dash-root"]);
+  D.init(d, win("?order_id=" + SID));
+  await tick();
+  const root = d.getElementById("dash-root");
+  assert.match(root.querySelector("[data-renewal-price]").textContent, /\$29 for the first month/);
+  const subBefore = root.querySelector("[data-sub-section]");
+  assert.ok(subBefore.textContent.includes("Active") && !subBefore.textContent.includes("Ends on"));
+  root.querySelector('[data-action="cancel-start"]').click();
+  root.querySelector('[data-action="cancel-confirm"]').click();
+  await tick();
+  const sub = root.querySelector("[data-sub-section]");
+  assert.equal(sub, subBefore, "same section, re-filled");
+  const t = sub.textContent;
+  assert.ok(t.includes("Active until the end of the paid month (cancelled)"), t);
+  assert.ok(t.includes("Ends on") && t.includes(C.formatDay("2026-12-26")));
+  assert.ok(t.includes("You won't be charged again"));
+  assert.equal(sub.querySelectorAll("h2").length, 1);
+  assert.equal(root.querySelector("[data-cancel-intro]").hidden, true);
+});
+
+test("dashboard: a refunded monitor order still shows its subscription and can cancel", () => {
+  const node = D.renderDashboard(doc, { ...DASH, refunded: true }, SID);
+  const html = serialize(node);
+  assert.ok(html.includes("was refunded") && html.includes(">Refunded<"));
+  assert.ok(!html.includes('href="report.html'), "no dead report link");
+  assert.ok(html.includes("Paid through") && html.includes('data-action="cancel-start"'), "status and cancel are still there");
+  assert.ok(node.querySelector("[data-renewal-terms]"));
+  const ended = serialize(D.renderDashboard(doc, { ...DASH, refunded: true, subscription: { ...DASH.subscription, status: "CANCELED", canceled_date: "2026-11-27" } }, SID));
+  assert.ok(ended.includes("Cancelled") && ended.includes("Ends on") && !ended.includes("cancel-start"));
+});
+
+test("admin: sales error, truncated totals and a running monitoring run", () => {
+  const off = AD.renderSummary(doc, { ok: true, counters: SUMMARY.counters, monitoring: { running: true, last_run: null },
+    sales: null, sales_error: "We couldn't reach Square just now." });
+  const t = off.textContent;
+  assert.ok(t.includes("We couldn't reach Square just now."));
+  assert.ok(t.includes("Free checks") && t.includes("140"), "counters still shown without sales");
+  assert.ok(!t.includes("Net sales"));
+  assert.ok(t.includes("A monitoring run is going now"));
+  assert.ok(serialize(AD.renderSummary(doc, { ok: true, counters: {}, monitoring: {}, sales: null })).includes("Sales weren't loaded"));
+  const tr = AD.renderSummary(doc, { ...SUMMARY, sales: { ...SUMMARY.sales, truncated: true } }).textContent;
+  assert.ok(tr.includes("these totals are incomplete"));
+  const bad = AD.renderSummary(doc, { ...SUMMARY, monitoring: { running: false, last_run: { started: 1795731516, finished: null,
+    counts: { sites: 0, scanned: 0, skipped_recent: 0, not_checked: 0, emails_sent: 0, emails_skipped: 0, error: "square_unavailable" } } } }).textContent;
+  assert.ok(bad.includes("didn't finish") && bad.includes("couldn't list the subscriptions from Square"));
+  const html = serialize(AD.renderSummary(doc, { ...SUMMARY, sales_error: EVIL, sales: null }));
+  assert.ok(!html.includes("<img") && html.includes("&lt;img"));
+});
+
+test("admin: focus moves to the summary after sign-in", async () => {
+  mockFetch({ "/api/admin/summary": { status: 200, body: SUMMARY } });
+  const d = adminPage();
+  AD.init(d, adminWin());
+  focused = null;
+  d.getElementById("admin-token").value = TOKEN;
+  d.getElementById("admin-login").submit();
+  await tick();
+  assert.ok(focused && focused.tagName === "H2" && focused.getAttribute("id") === "h-summary", "focus is on the summary heading");
+  assert.equal(focused.getAttribute("tabindex"), "-1");
+  focused = null;
+  d.getElementById("admin-refresh").click();
+  await tick();
+  assert.equal(focused, null, "a refresh doesn't move focus");
+});
+
+test("terms page fills the monitoring prices from /api/plans and keeps its text without the API", async () => {
+  mockFetch({ "/api/plans": { status: 200, body: { ok: true, plans: [{ ...MON, cents: 2500, first_cents: 3900 }] } } });
+  const span = mk("span", { "data-plan-terms": "monitor" }, "$29 for the first month, then $19 a month");
+  const d = page([], [span, mk("span", { "data-support": "" }, "email the support address"), mk("li", { "data-if-support": "", hidden: "" })]);
+  await L.init(d, win(""));
+  assert.equal(span.textContent, "$39 for the first month, then $25 a month");
+  mockFetch({ "/api/plans": "network" });
+  const s2 = mk("span", { "data-plan-terms": "monitor" }, "$29 for the first month, then $19 a month");
+  await L.init(page([], [s2]), win(""));
+  assert.equal(s2.textContent, "$29 for the first month, then $19 a month");
+  mockFetch({});
+  await L.init(page([], []), win(""));
+  assert.equal(calls.length, 0, "pages without prices make no request");
 });
 
 let passed = 0;

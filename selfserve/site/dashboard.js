@@ -41,13 +41,21 @@
     dl.appendChild(C.el(doc, "dd", { text: value }));
   }
 
-  /* Pure: the subscription facts, as a <dl>. */
-  function renderSubscription(doc, plan, sub) {
+  function isCancelled(sub) {
+    return !!sub && (!!sub.canceled_date || String(sub.status || "").toUpperCase() === "CANCELED");
+  }
+
+  /* Fill the Monitoring section (it is re-filled in place after a cancel). */
+  function fillSubscription(doc, s, plan, sub, refunded) {
     var el = C.el;
-    var s = section(doc, "Monitoring", "h-sub");
+    s.appendChild(el(doc, "h2", { text: "Monitoring", attrs: { id: "h-sub" } }));
     if (plan !== "monitor") {
       s.appendChild(el(doc, "p", { text: "This order is a one-time report, so there is nothing to cancel and you won't be charged again." }));
       return s;
+    }
+    if (refunded) {
+      s.appendChild(el(doc, "p", { className: "notice", text: "This payment was refunded, so its report link no longer works. " +
+        "The monitoring subscription is shown below so you can check that it has ended, or cancel it." }));
     }
     if (!sub || typeof sub !== "object") {
       s.appendChild(el(doc, "p", { className: "status error", text:
@@ -55,14 +63,14 @@
       return s;
     }
     var dl = el(doc, "dl", { className: "facts", attrs: { "data-sub": "" } });
-    var cancelled = !!sub.canceled_date || String(sub.status || "").toUpperCase() === "CANCELED";
+    var cancelled = isCancelled(sub);
     fact(doc, dl, "Status", cancelled && String(sub.status || "").toUpperCase() === "ACTIVE" ? "Active until the end of the paid month (cancelled)" : subStatus(sub));
     fact(doc, dl, "Started", C.formatDay(sub.start_date));
     fact(doc, dl, "Paid through", C.formatDay(sub.charged_through_date));
-    fact(doc, dl, "Cancelled on", C.formatDay(sub.canceled_date));
+    fact(doc, dl, "Ends on", C.formatDay(sub.canceled_date));
     s.appendChild(dl);
     if (cancelled) {
-      s.appendChild(el(doc, "p", { text: endsText(sub.charged_through_date) }));
+      s.appendChild(el(doc, "p", { text: endsText(sub.canceled_date || sub.charged_through_date) }));
     } else if (canCancel(plan, sub)) {
       s.appendChild(el(doc, "p", { className: "muted small", text:
         "Renews monthly until you cancel. Cancelling takes effect at the end of the month you've already paid for." }));
@@ -70,13 +78,56 @@
     return s;
   }
 
+  /* Pure: the subscription facts, as a <dl>. */
+  function renderSubscription(doc, plan, sub, refunded) {
+    var s = C.el(doc, "section", { className: "dash-section", attrs: { "aria-labelledby": "h-sub", "data-sub-section": "" } });
+    return fillSubscription(doc, s, plan, sub, refunded);
+  }
+
+  /* One problem from latest_changes: {id, title, severity} (a bare string is accepted too). */
+  function changeItem(doc, x) {
+    if (typeof x === "string") return x ? C.el(doc, "li", { text: C.str(x, 300) }) : null;
+    if (!x || typeof x !== "object") return null;
+    var title = C.str(x.title || x.id, 300);
+    if (!title) return null;
+    return C.el(doc, "li", {}, [x.severity ? C.severityBadge(doc, x.severity) : null, x.severity ? " " : null, C.el(doc, "span", { text: title })]);
+  }
+
+  /* latest_changes: {score_change, new: [...], fixed: [...], since?, grade_before?, grade_after?}. */
+  function renderChanges(doc, changes) {
+    var el = C.el;
+    var cs = section(doc, "What changed since the last check", "h-changes");
+    var since = C.formatWhen(changes.since);
+    if (since) cs.appendChild(el(doc, "p", { className: "muted small", text: "Compared with the check on " + since + "." }));
+    var sc = C.num(changes.score_change);
+    cs.appendChild(el(doc, "p", { className: "score", text: sc === null ? "Score change: not measured"
+      : sc === 0 ? "Score: no change" : "Score: " + (sc > 0 ? "+" : "") + Math.round(sc) + " point" + (Math.abs(Math.round(sc)) === 1 ? "" : "s") }));
+    var gb = C.gradeKey(changes.grade_before) ? C.str(changes.grade_before, 3).trim().toUpperCase() : "";
+    var ga = C.gradeKey(changes.grade_after) ? C.str(changes.grade_after, 3).trim().toUpperCase() : "";
+    if (gb && ga) cs.appendChild(el(doc, "p", { text: gb === ga ? "Grade: " + ga + " (no change)" : "Grade: " + gb + " before, " + ga + " now" }));
+    [["New problems", changes["new"]], ["Fixed", changes.fixed]].forEach(function (pair) {
+      var items = (Array.isArray(pair[1]) ? pair[1] : []).slice(0, 50).map(function (x) { return changeItem(doc, x); })
+        .filter(function (x) { return x; });
+      cs.appendChild(el(doc, "h3", { text: pair[0] + " (" + items.length + ")" }));
+      if (items.length) {
+        cs.appendChild(el(doc, "ul", { className: "checklist" }, items));
+      } else {
+        cs.appendChild(el(doc, "p", { className: "muted", text: "None." }));
+      }
+    });
+    cs.appendChild(el(doc, "p", { className: "muted small", text:
+      "Only checks that could be measured both times are compared, so a check we couldn't measure this time is never shown as fixed or new." }));
+    return cs;
+  }
+
   /* Pure: build the dashboard node from a 200 GET /api/dashboard response. */
-  function renderDashboard(doc, data, orderId) {
+  function renderDashboard(doc, data, orderId, prices) {
     var el = C.el;
     data = data || {};
     var site = C.str(data.site, 200) || "your website";
     var plan = C.isPlanId(data.plan) ? data.plan : "checkup";
     var sub = data.subscription && typeof data.subscription === "object" ? data.subscription : null;
+    var refunded = data.refunded === true;
     var history = (Array.isArray(data.history) ? data.history : []).filter(function (x) { return x && typeof x === "object"; });
     var changes = data.latest_changes && typeof data.latest_changes === "object" ? data.latest_changes : null;
 
@@ -86,33 +137,18 @@
     var dl = el(doc, "dl", { className: "facts" });
     fact(doc, dl, "Website", site);
     fact(doc, dl, "Plan", C.planName(plan));
+    if (refunded) fact(doc, dl, "Payment", "Refunded");
     head.appendChild(dl);
-    var href = C.reportHref(data.report_path, orderId);
-    var row = el(doc, "div", { className: "btn-row" });
+    var href = refunded ? "" : C.reportHref(data.report_path, orderId);
+    var row = el(doc, "div", { className: "btn-row no-print" });
     if (href) row.appendChild(C.localLink(doc, href, "Open your report", "btn"));
+    if (plan === "monitor") row.appendChild(el(doc, "button", { className: "btn btn-secondary", text: "Print this page", attrs: { type: "button", "data-action": "print" } }));
     head.appendChild(row);
     root.appendChild(head);
 
-    root.appendChild(renderSubscription(doc, plan, sub));
+    root.appendChild(renderSubscription(doc, plan, sub, refunded));
 
-    if (changes) {
-      var cs = section(doc, "What changed since the last check", "h-changes");
-      var sc = C.num(changes.score_change);
-      cs.appendChild(el(doc, "p", { className: "score", text: sc === null ? "Score change: not measured"
-        : sc === 0 ? "Score: no change" : "Score: " + (sc > 0 ? "+" : "") + Math.round(sc) + " point" + (Math.abs(Math.round(sc)) === 1 ? "" : "s") }));
-      [["New problems", changes.new_problems], ["Fixed", changes.fixed]].forEach(function (pair) {
-        var items = (Array.isArray(pair[1]) ? pair[1] : []).filter(function (x) { return typeof x === "string" && x; });
-        cs.appendChild(el(doc, "h3", { text: pair[0] + " (" + items.length + ")" }));
-        if (items.length) {
-          var ul = el(doc, "ul", { className: "checklist" });
-          items.slice(0, 50).forEach(function (t) { ul.appendChild(el(doc, "li", { text: C.str(t, 300) })); });
-          cs.appendChild(ul);
-        } else {
-          cs.appendChild(el(doc, "p", { className: "muted", text: "None." }));
-        }
-      });
-      root.appendChild(cs);
-    }
+    if (changes) root.appendChild(renderChanges(doc, changes));
 
     var hs = section(doc, "Check history", "h-history");
     if (history.length) {
@@ -126,7 +162,7 @@
       history.slice(0, 36).forEach(function (h) {
         var g = C.gradeKey(h.grade) ? C.str(h.grade, 3).trim().toUpperCase() : "?";
         tb.appendChild(el(doc, "tr", {}, [
-          el(doc, "td", { text: C.formatDate(h.at) || "unknown date" }),
+          el(doc, "td", { text: C.formatWhen(h.at) || "unknown date" }),
           el(doc, "td", { text: g }),
           el(doc, "td", { className: "num", text: C.num(h.score) === null ? "not measured" : C.scoreText(h.score) + "/100" })
         ]));
@@ -142,8 +178,9 @@
 
     if (canCancel(plan, sub)) {
       var xs = section(doc, "Cancel monitoring", "h-cancel");
+      xs.setAttribute("data-cancel-section", "");
       var paid = C.formatDay(sub.charged_through_date);
-      xs.appendChild(el(doc, "p", { text: "You can cancel online at any time. Monitoring then stays on until the end of the month you've already paid for" +
+      xs.appendChild(el(doc, "p", { attrs: { "data-cancel-intro": "" }, text: "You can cancel online at any time. Monitoring then stays on until the end of the month you've already paid for" +
         (paid ? " (" + paid + ")" : "") + ", and you won't be charged again." }));
       xs.appendChild(el(doc, "div", { className: "btn-row" }, [
         el(doc, "button", { className: "btn btn-secondary", text: "Cancel monitoring", attrs: { type: "button", "data-action": "cancel-start", "aria-controls": "cancel-confirm", "aria-expanded": "false" } })
@@ -159,6 +196,8 @@
       xs.appendChild(el(doc, "p", { className: "status", attrs: { "data-cancel-status": "", role: "status", "aria-live": "polite", hidden: "" } }));
       root.appendChild(xs);
     }
+
+    if (plan === "monitor") root.appendChild(C.renewalTerms(doc, orderId, prices || null));
     return root;
   }
 
@@ -236,10 +275,18 @@
         }, 60000, null).then(function (r) {
           var d = r.data || {};
           if (r.status === 200 && d.ok === true) {
+            var before = data.subscription || {};
+            var ends = typeof d.ends === "string" && d.ends ? d.ends : (before.canceled_date || before.charged_through_date || null);
+            var after = Object.assign({}, before, { canceled_date: ends, status: typeof d.status === "string" && d.status ? d.status : before.status });
+            data.subscription = after;
+            var subSec = out.querySelector("[data-sub-section]");
+            if (subSec) { C.clear(subSec); fillSubscription(doc, subSec, "monitor", after, data.refunded === true); }
             panel.hidden = true;
             start.hidden = true;
             start.disabled = true;
-            say("Monitoring is cancelled. " + endsText(typeof d.ends === "string" ? d.ends : (data.subscription || {}).charged_through_date), false);
+            var intro = out.querySelector("[data-cancel-intro]");
+            if (intro) intro.hidden = true;
+            say("Monitoring is cancelled. " + endsText(ends), false);
             if (st.focus) { st.setAttribute("tabindex", "-1"); st.focus(); }
             return;
           }
@@ -262,8 +309,14 @@
           if (r.status === 200 && d.ok === true) {
             status.hidden = true;
             C.clear(out);
-            out.appendChild(renderDashboard(doc, d, orderId));
+            out.appendChild(renderDashboard(doc, d, orderId, null));
             wireCancel(d);
+            Array.prototype.forEach.call(out.querySelectorAll('[data-action="print"]'), function (b) {
+              b.addEventListener("click", function () { if (win.print) win.print(); });
+            });
+            if (C.isPlanId(d.plan) && d.plan === "monitor") {
+              C.loadPlans(cfg).then(function (plans) { if (plans && plans.monitor) C.fillRenewalPrice(out, plans.monitor); });
+            }
             if (d.site) doc.title = "Dashboard for " + C.str(d.site, 100) + " — Apex Forge Website Checkup";
           } else {
             showStatus(C.errorText(d, "We couldn't load your dashboard (code " + r.status + ")."), true, false);
@@ -283,7 +336,7 @@
   }
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { renderDashboard: renderDashboard, renderSubscription: renderSubscription, canCancel: canCancel, init: init };
+    module.exports = { renderDashboard: renderDashboard, renderSubscription: renderSubscription, renderChanges: renderChanges, canCancel: canCancel, init: init };
   } else {
     init(document, window);
   }

@@ -4,6 +4,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from html.parser import HTMLParser
 
 import pytest
@@ -556,3 +557,187 @@ def test_publish_refuses_the_site_folder_itself():
     proc = subprocess.run([sys.executable, os.path.join(SITE, "build_config.py"), "--publish", SITE],
                           env=env, capture_output=True, text=True)
     assert proc.returncode != 0
+
+
+# ---------------------------------------------------------------- review fixes (round 1)
+TWO_PHASE = '<span data-plan-terms="monitor">$29 for the first month, then $19 a month</span>'
+
+
+@pytest.mark.parametrize("name", ["index.html", "terms.html", *LANDING])
+def test_monitoring_price_is_two_phase_everywhere(name):
+    """Every page that describes Monthly Monitoring shows both prices (filled from /api/plans at runtime)."""
+    html = read(name)
+    assert TWO_PHASE in html, name
+
+
+def test_no_page_shows_a_single_monitoring_price():
+    for name in HTML_FILES:
+        html = read(name)
+        text = re.sub(r"<[^>]+>", "", html)
+        assert "per month" not in text, f"{name}: say 'a month' after the first month"
+        if 'data-plan-price="monitor"' in html:
+            assert "for the first month" in html, f"{name} shows the monthly price without the first-month price"
+        assert not re.search(r"renews (each month|monthly) at the price shown", text, re.I), name
+
+
+def test_landing_monitoring_line_only_when_monitoring_is_on_sale():
+    for name in LANDING:
+        if name == "website-monitoring.html":
+            continue
+        line = re.search(r'<p[^>]*data-if-plan="monitor"[^>]*>(.*?)</p>', read(name), re.S)
+        assert line and " hidden" in line.group(0), name
+        for words in ("for the first month", "renews monthly until you cancel online from your dashboard", "end of the month"):
+            assert words in line.group(1), (name, words)
+
+
+def test_index_auto_renew_disclosure_names_both_prices():
+    html = read("index.html")
+    renew = re.search(r'<p id="monitor-renew"[^>]*>(.*?)</p>', html, re.S).group(1)
+    assert TWO_PHASE in renew
+    assert 'href="terms.html#monitoring"' in renew
+    card = re.search(r'<article class="plan" data-plan-card="monitor".*?</article>', html, re.S).group(0)
+    assert 'data-plan-first-price="monitor"' in card and 'data-plan-price="monitor"' in card
+    assert "data-if-emails" not in card, "monitoring is only sold with emails on, so its emails aren't conditional"
+
+
+def test_terms_match_the_decisions():
+    terms = re.sub(r"\s+", " ", read("terms.html"))
+    assert 'id="monitoring"' in terms
+    for words in ("two prices", "first-month price, which includes the full report",
+                  "only sold while our order emails are switched on",
+                  "we cancel the subscription first", "Find my report can email your links",
+                  "History for one-time reports is deleted after 30 days",
+                  "always comes from Square", "cancel online at any time", "end of the month you've already paid for"):
+        assert words in terms, words
+
+
+def test_privacy_matches_the_decisions():
+    privacy = re.sub(r"\s+", " ", read("privacy.html"))
+    for words in ("Monthly Monitoring is only sold while these emails are switched on",
+                  "Find my report sends the links to that email address instead of showing them on the page",
+                  "are deleted after 30 days", "best-effort basis", "money records always come from Square",
+                  "a short note on your Square order", "holds no personal details"):
+        assert words in privacy, words
+
+
+def test_find_page_explains_emailed_links():
+    html = read("find.html")
+    assert "we email the report and dashboard links to that address instead of showing them here" in html
+    js = read("find.js")
+    assert "emailed === true" in js and "We've emailed the links to that address if we found any" in js
+
+
+def test_pageshow_reenables_plan_buttons_in_source():
+    js = read("app.js")
+    assert 'addEventListener("pageshow"' in js and "persisted" in js
+
+
+def test_renewal_terms_block_is_shared_and_printable():
+    common = read("common.js")
+    assert "function renewalTerms" in common and "terms.html#monitoring" in common
+    assert 'data.plan === "monitor"' in read("report.js")
+    assert "C.renewalTerms(" in read("dashboard.js")
+    css = read("style.css")
+    assert ".renewal-terms" in css
+    assert "no-print" not in re.search(r"function renewalTerms.*?return s;", common, re.S).group(0)
+
+
+def test_admin_reads_the_real_summary_shape():
+    js = read("admin.js")
+    for words in ("data.sales", "sales_error", "last_run", "skipped_recent", "emails_skipped", "truncated", "cancelling", "h-summary"):
+        assert words in js, words
+    assert "last_run_at" not in js, "old guessed shape is gone"
+
+
+def test_fixtures_are_real_server_shapes():
+    import json
+    fx = os.path.join(SITE, "tests", "fixtures")
+    admin = json.load(open(os.path.join(fx, "admin.json")))
+    assert set(admin) >= {"ok", "counters", "monitoring", "sales"} and "orders" not in admin
+    assert set(admin["monitoring"]) == {"running", "last_run"}
+    assert set(admin["monitoring"]["last_run"]) == {"started", "finished", "counts"}
+    dash = json.load(open(os.path.join(fx, "dashboard.json")))
+    assert isinstance(dash["history"][0]["at"], (int, float))
+    assert {"score_change", "new", "fixed"} <= set(dash["latest_changes"])
+    assert "id" not in dash["subscription"], "server.public_subscription leaves out the subscription id"
+    plans = json.load(open(os.path.join(fx, "plans.json")))
+    mon = [p for p in plans["plans"] if p["id"] == "monitor"][0]
+    assert mon["first_cents"] == 2900 and mon["cents"] == 1900
+
+
+def _keys_cover(fixture, real, where):
+    """Every key the fixture has is in the real output, recursively for objects (lists: first item)."""
+    if isinstance(fixture, dict):
+        assert isinstance(real, dict), where
+        for k, v in fixture.items():
+            assert k in real, f"{where}.{k} is in the fixture but not in the server's real output"
+            _keys_cover(v, real[k], f"{where}.{k}")
+    elif isinstance(fixture, list) and fixture and real:
+        _keys_cover(fixture[0], real[0], where + "[0]")
+
+
+def test_fixtures_match_what_the_server_really_returns(tmp_path, monkeypatch):
+    """Build /api/dashboard and /api/admin/summary with the server's own code (a purchase scan, then a
+    real monitoring run with the real diff), Square faked; the fixtures must have the same shape, and
+    the page code must render the real output."""
+    import json
+    import shutil
+    api = os.path.join(SITE, "..", "api")
+    monkeypatch.syspath_prepend(api)
+    monkeypatch.setenv("APEX_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("MAIL_BACKEND", raising=False)
+    import server
+    import store as store_mod
+    import monitor
+    pay = server.pay
+    st = store_mod.Store(str(tmp_path / "data" / "apex.sqlite3"))
+    store_mod.set_default(st)
+    try:
+        sid = "ORDabcdefghijkl"
+        site = {"subscription_id": "sub_fixture_1", "customer_id": "CUST1", "order_id": sid, "website": "https://roof.example/",
+                "email": "", "state": {"last": None, "month": None, "failing": [], "not_measured": []}}
+        paid = {"order_id": sid, "website": "https://roof.example/", "plan": "monitor", "refunded": False, "delivered": True,
+                "customer_id": "CUST1", "email": "", "ready_mailed": True,
+                "monitor_state": {"last": None, "month": None, "failing": [], "not_measured": []}}
+        sub = {"id": "sub_fixture_1", "status": "ACTIVE", "start_date": "2026-10-26", "charged_through_date": "2026-12-26", "canceled_date": None}
+        sales = json.load(open(os.path.join(SITE, "tests", "fixtures", "admin.json")))["sales"]
+        monkeypatch.setattr(pay, "monitored_sites", lambda *a, **k: [site])
+        monkeypatch.setattr(pay, "get_paid_order", lambda *a, **k: dict(paid))
+        monkeypatch.setattr(pay, "subscription_for_order", lambda *a, **k: dict(sub))
+        monkeypatch.setattr(pay, "sales_summary", lambda *a, **k: dict(sales))
+        monkeypatch.setattr(pay, "set_monitor_state", lambda *a, **k: True, raising=False)
+        monkeypatch.setattr(pay, "mark_ready_mailed", lambda *a, **k: True, raising=False)
+
+        def result(grade, score, findings):
+            return {"ok": True, "site": "roof.example", "grade": grade, "score": score,
+                    "report": {"findings": [{"id": i, "title": t, "severity": s} for i, t, s in findings], "sections": [],
+                               "not_measured": []}}
+        server.record_scan(sid, result("C", 70, [("1.1", "Slow server response", "CRITICAL"), ("2.4", "No tap-to-call button", "CRITICAL")]), "report")
+        later = time.time() + 26 * 24 * 3600
+        counts = monitor.run_monitoring(lambda mode, url: result("B", 81, [("8.6", "No DMARC email record", "HIGH")]), now=later, store=st)
+        assert counts.get("scanned") == 1, counts
+
+        code, dash = server.dashboard(sid)
+        assert code == 200, dash
+        code, admin = server.admin_summary("30")
+        assert code == 200, admin
+    finally:
+        store_mod.set_default(None)
+        st.close()
+
+    fx = os.path.join(SITE, "tests", "fixtures")
+    _keys_cover(json.load(open(os.path.join(fx, "dashboard.json"))), dash, "dashboard")
+    _keys_cover(json.load(open(os.path.join(fx, "admin.json"))), admin, "admin")
+    assert [c["title"] for c in dash["latest_changes"]["new"]] == ["No DMARC email record"]
+    assert sorted(c["title"] for c in dash["latest_changes"]["fixed"]) == ["No tap-to-call button", "Slow server response"]
+    assert isinstance(dash["history"][0]["at"], float)
+
+    if not shutil.which("node"):
+        pytest.skip("node not installed")
+    (tmp_path / "dash.json").write_text(json.dumps(dash))
+    (tmp_path / "admin.json").write_text(json.dumps(admin))
+    p = subprocess.run(["node", os.path.join(SITE, "tests", "contract.mjs"),
+                        os.path.join(fx, "mini.json"), os.path.join(fx, "report-pro.json"),
+                        "--dashboard=" + str(tmp_path / "dash.json"), "--admin=" + str(tmp_path / "admin.json")],
+                       capture_output=True, text=True, timeout=60)
+    assert p.returncode == 0, p.stdout + p.stderr

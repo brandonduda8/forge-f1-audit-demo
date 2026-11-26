@@ -84,7 +84,7 @@ if (rep.report.pages !== undefined) {
   done.push(`Pro pages (${pages.length})`);
 }
 
-// GET /api/plans -> {ok, plans: [{id, label, cents, kind, available}]}
+// GET /api/plans -> {ok, plans: [{id, label, cents, kind, available, first_cents?}]}
 if (flags.plans) {
   const plans = load(flags.plans);
   assert.equal(plans.ok, true);
@@ -95,58 +95,86 @@ if (flags.plans) {
     assert.ok(Number.isInteger(p.cents) && p.cents > 0, "plan cents is a positive integer");
     assert.ok(["one_time", "subscription"].includes(p.kind), "plan kind " + p.kind);
     assert.equal(typeof p.available, "boolean");
+    if ("first_cents" in p) assert.ok(Number.isInteger(p.first_cents) && p.first_cents > 0, "first_cents is a positive integer");
   }
   const ids = plans.plans.map((p) => p.id);
   for (const id of ["checkup", "pro", "monitor"]) assert.ok(ids.includes(id), "plans lists " + id);
   const byId = C.plansById(plans);
   assert.equal(byId.monitor.kind, "subscription");
   assert.equal(byId.checkup.kind, "one_time");
+  const mon = plans.plans.find((p) => p.id === "monitor");
+  if (mon.first_cents && mon.first_cents !== mon.cents) {
+    assert.equal(C.priceText(byId.monitor), C.dollars(mon.first_cents) + " for the first month, then " + C.dollars(mon.cents) + " a month");
+  }
   done.push(`plans (${ids.join(", ")})`);
 }
 
 // GET /api/dashboard -> {ok, site, plan, report_path, subscription|null, history: [{at, grade, score}], latest_changes|null}
+// (server.dashboard; latest_changes is monitor.diff: {score_change, new: [{id,title,severity}], fixed: [...], ...})
 if (flags.dashboard) {
   const d = load(flags.dashboard);
   assert.equal(d.ok, true);
   for (const k of ["site", "plan", "report_path"]) assert.equal(typeof d[k], "string", "dashboard " + k);
   assert.ok(C.reportHref(d.report_path, "") !== "", "report_path is a same-site report link");
   assert.ok(d.subscription === null || typeof d.subscription === "object", "subscription is an object or null");
-  if (d.subscription) for (const k of ["id", "status", "start_date", "charged_through_date", "canceled_date"]) assert.ok(k in d.subscription, "subscription." + k);
+  if (d.subscription) for (const k of ["status", "start_date", "charged_through_date", "canceled_date"]) assert.ok(k in d.subscription, "subscription." + k);
   assert.ok(Array.isArray(d.history), "history is a list");
-  for (const h of d.history) for (const k of ["at", "grade", "score"]) assert.ok(k in h, "history." + k);
-  assert.ok(d.latest_changes === null || (typeof d.latest_changes === "object" && Array.isArray(d.latest_changes.new_problems) &&
-    Array.isArray(d.latest_changes.fixed) && "score_change" in d.latest_changes), "latest_changes shape");
+  for (const h of d.history) {
+    for (const k of ["at", "grade", "score"]) assert.ok(k in h, "history." + k);
+    assert.equal(typeof h.at, "number", "history at is epoch seconds");
+  }
+  const lc = d.latest_changes;
+  assert.ok(lc === null || (typeof lc === "object" && Array.isArray(lc.new) && Array.isArray(lc.fixed) && "score_change" in lc), "latest_changes shape");
+  if (lc) for (const x of [...lc.new, ...lc.fixed]) for (const k of ["id", "title", "severity"]) assert.equal(typeof x[k], "string", "change." + k);
   const did = C.reportHref(d.report_path, "").split("order_id=")[1];
   const node = D.renderDashboard(doc, d, did);
   const t = node.textContent;
   assert.ok(t.includes(d.site), "dashboard shows the site");
   assert.ok(t.includes(C.planName(d.plan)), "dashboard shows the plan");
-  for (const h of d.history) if (C.num(h.score) !== null) assert.ok(t.includes(C.scoreText(h.score) + "/100"), "history score shown");
-  if (d.latest_changes) for (const x of [...d.latest_changes.new_problems, ...d.latest_changes.fixed]) assert.ok(t.includes(x), "change shown: " + x);
+  for (const h of d.history) {
+    if (C.num(h.score) !== null) assert.ok(t.includes(C.scoreText(h.score) + "/100"), "history score shown");
+    assert.ok(t.includes(C.formatWhen(h.at)) && C.formatWhen(h.at) !== "", "history date shown");
+  }
+  if (lc) for (const x of [...lc.new, ...lc.fixed]) assert.ok(t.includes(x.title), "change shown: " + x.title);
+  assert.equal(t.includes("Your Monthly Monitoring terms"), d.plan === "monitor", "renewal terms only for monitoring");
+  if (d.subscription && d.subscription.canceled_date) assert.ok(t.includes("Ends on"), "a cancelled subscription says when it ends");
   done.push(`dashboard (${d.plan}, ${d.history.length} checks)`);
 }
 
-// GET /api/admin/summary -> sales_summary + counters + monitoring
+// GET /api/admin/summary -> {ok, counters, monitoring: {running, last_run|null}, sales: sales_summary|null, sales_error?}
 if (flags.admin) {
-  const s = load(flags.admin);
-  assert.equal(s.ok, true);
-  for (const k of ["days", "orders", "gross_cents", "refunded_cents", "net_cents", "active_subscriptions", "mrr_cents"]) {
-    assert.ok(Number.isInteger(s[k]), "summary " + k + " is an integer");
+  const a = load(flags.admin);
+  assert.equal(a.ok, true);
+  for (const k of ["free_checks", "checkouts_started", "reports_delivered"]) assert.ok(Number.isInteger(a.counters[k]), "counters." + k);
+  assert.equal(typeof a.monitoring, "object");
+  assert.equal(typeof a.monitoring.running, "boolean", "monitoring.running");
+  const lr = a.monitoring.last_run;
+  assert.ok(lr === null || (typeof lr.started === "number" && (lr.finished === null || typeof lr.finished === "number")), "last_run times");
+  if (lr && lr.counts) for (const k of ["sites", "scanned", "skipped_recent", "not_checked", "emails_sent", "emails_skipped"]) assert.ok(Number.isInteger(lr.counts[k]), "counts." + k);
+  const s = a.sales;
+  assert.ok(s === null || typeof s === "object", "sales is an object or null");
+  if (s === null) assert.equal(typeof a.sales_error, "string", "sales_error explains a missing sales block");
+  const t = AD.renderSummary(doc, a).textContent;
+  if (s) {
+    for (const k of ["days", "orders", "gross_cents", "refunded_cents", "net_cents", "active_subscriptions", "mrr_cents"]) {
+      assert.ok(Number.isInteger(s[k]), "sales " + k + " is an integer");
+    }
+    assert.equal(typeof s.by_plan, "object");
+    for (const [id, v] of Object.entries(s.by_plan)) { assert.ok(C.isPlanId(id)); assert.ok(Number.isInteger(v.count) && Number.isInteger(v.gross_cents)); }
+    assert.ok(Array.isArray(s.recent) && s.recent.length <= 20, "recent is a list of at most 20");
+    for (const x of s.recent) {
+      for (const k of ["created", "plan", "amount_cents", "site", "refunded"]) assert.ok(k in x, "recent." + k);
+      assert.ok(!String(x.site).includes("@"), "recent sales never carry emails");
+    }
+    assert.ok(t.includes(C.dollars(s.net_cents, true)), "net shown in dollars");
+    assert.ok(t.includes(C.dollars(s.mrr_cents, true)), "MRR shown in dollars");
+    for (const x of s.recent) assert.ok(t.includes(x.site), "recent sale shown: " + x.site);
+    if (Number.isInteger(s.cancelling)) assert.ok(t.includes(s.cancelling + " more cancelled"), "cancelling shown");
+  } else {
+    assert.ok(t.includes(a.sales_error), "sales_error shown");
   }
-  assert.equal(typeof s.by_plan, "object");
-  for (const [id, v] of Object.entries(s.by_plan)) { assert.ok(C.isPlanId(id)); assert.ok(Number.isInteger(v.count) && Number.isInteger(v.gross_cents)); }
-  assert.ok(Array.isArray(s.recent) && s.recent.length <= 20, "recent is a list of at most 20");
-  for (const x of s.recent) {
-    for (const k of ["created", "plan", "amount_cents", "site", "refunded"]) assert.ok(k in x, "recent." + k);
-    assert.ok(!String(x.site).includes("@"), "recent sales never carry emails");
-  }
-  for (const k of ["free_checks", "checkouts_started", "reports_delivered"]) assert.ok(Number.isInteger(s.counters[k]), "counters." + k);
-  assert.ok(s.monitoring === null || ["last_run_at", "checked", "emailed", "errors"].every((k) => k in s.monitoring), "monitoring shape");
-  const t = AD.renderSummary(doc, s).textContent;
-  assert.ok(t.includes(C.dollars(s.net_cents, true)), "net shown in dollars");
-  assert.ok(t.includes(C.dollars(s.mrr_cents, true)), "MRR shown in dollars");
-  for (const x of s.recent) assert.ok(t.includes(x.site), "recent sale shown: " + x.site);
-  done.push(`admin summary (${s.orders} orders)`);
+  if (lr && lr.counts) assert.ok(t.includes("Monitored sites") && t.includes(String(lr.counts.sites)), "last monitoring run shown");
+  done.push(`admin summary (${s ? s.orders + " orders" : "no sales"})`);
 }
 
 console.log(`contract ok: free check (${mini.top.length} issues), ${done.join(", ")} render from real API output`);

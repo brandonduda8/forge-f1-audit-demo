@@ -73,15 +73,86 @@
     list.forEach(function (p) {
       if (!p || typeof p !== "object" || !isPlanId(p.id) || out[p.id]) return;
       var cents = num(p.cents);
+      var first = num(p.first_cents);
       out[p.id] = {
         id: p.id,
         cents: cents !== null && cents > 0 ? Math.round(cents) : null,
+        first_cents: first !== null && first > 0 ? Math.round(first) : null,
         kind: p.kind === "subscription" ? "subscription" : "one_time",
         available: p.available === true && cents !== null && cents > 0,
         label: str(p.label, 120)
       };
     });
     return out;
+  }
+
+  /* How a plan's price reads. A subscription with a separate first-month price:
+     "$29 for the first month, then $19 a month"; otherwise "$19 a month" or "$29". "" if unknown. */
+  function priceText(p) {
+    if (!p || typeof p !== "object") return "";
+    var monthly = dollars(p.cents);
+    if (!monthly || num(p.cents) <= 0) return "";
+    if (p.kind !== "subscription") return monthly;
+    var first = num(p.first_cents) !== null && num(p.first_cents) > 0 ? dollars(p.first_cents) : "";
+    return first && first !== monthly ? first + " for the first month, then " + monthly + " a month" : monthly + " a month";
+  }
+
+  /* Fill [data-plan-terms="id"] (whole price sentence) and [data-plan-first-price="id"] from plansById. */
+  function fillPlanTerms(doc, plans) {
+    if (!plans) return;
+    Object.keys(plans).forEach(function (id) {
+      var p = plans[id];
+      var text = priceText(p);
+      if (text) Array.prototype.forEach.call(doc.querySelectorAll('[data-plan-terms="' + id + '"]'), function (n) { n.textContent = text; });
+      var first = p && (p.first_cents || p.cents) ? dollars(p.first_cents || p.cents) : "";
+      if (first) Array.prototype.forEach.call(doc.querySelectorAll('[data-plan-first-price="' + id + '"]'), function (n) { n.textContent = first; });
+    });
+  }
+
+  /* GET /api/plans -> plansById, or null when it can't be read. Never rejects. */
+  function loadPlans(cfg) {
+    if (!cfg || !cfg.apiOk) return Promise.resolve(null);
+    return fetchJson(cfg.apiBase + "/api/plans", { method: "GET" }, 60000, null).then(function (r) {
+      return r.status === 200 && r.data && r.data.ok === true && Array.isArray(r.data.plans) ? plansById(r.data) : null;
+    }, function () { return null; });
+  }
+
+  /* The printable Monthly Monitoring renewal terms, for the dashboard and the report page.
+     plan: the monitor entry of plansById (or null: the prices are then described, not shown). */
+  function renewalTerms(doc, orderId, plan) {
+    var s = el(doc, "section", { className: "renewal-terms", attrs: { "aria-labelledby": "h-renewal", "data-renewal-terms": "" } });
+    s.appendChild(el(doc, "h2", { text: "Your Monthly Monitoring terms", attrs: { id: "h-renewal" } }));
+    var ul = el(doc, "ul", { className: "checklist" });
+    ul.appendChild(el(doc, "li", { attrs: { "data-renewal-price": "" }, text: renewalPriceText(plan) }));
+    ul.appendChild(el(doc, "li", { text: "It renews automatically every month, and Square charges the payment method you used, until you cancel." }));
+    var dash = dashboardHref(orderId);
+    ul.appendChild(el(doc, "li", {}, dash ? ["Cancel online anytime from your dashboard: ", localLink(doc, dash, "open your dashboard"), "."]
+      : ["Cancel online anytime from your dashboard (linked from your report page, or use Find my report)."]));
+    ul.appendChild(el(doc, "li", { text: "When you cancel, monitoring stays on until the end of the month you've already paid for, and you won't be charged again." }));
+    s.appendChild(ul);
+    s.appendChild(el(doc, "p", { className: "small" }, ["The full terms are on the ", localLink(doc, "terms.html#monitoring", "Terms page"),
+      ". Print or save this page to keep a copy."]));
+    return s;
+  }
+
+  function renewalPriceText(plan) {
+    var t = priceText(plan && plan.kind === "subscription" ? plan : null);
+    return t ? "Price: " + t + ". The first month includes the full report. Your Square receipt shows exactly what you were charged."
+      : "Price: the first-month price (which includes the full report), then the monthly price, as shown on Square's checkout when you signed up. Your Square receipt shows exactly what you were charged.";
+  }
+
+  /* Put the current prices into a rendered renewal-terms block. */
+  function fillRenewalPrice(root, plan) {
+    Array.prototype.forEach.call(root.querySelectorAll("[data-renewal-price]"), function (n) { n.textContent = renewalPriceText(plan); });
+  }
+
+  /* Epoch seconds (the API's "at" and "created") or an ISO string -> a local date and time. */
+  function formatWhen(v) {
+    if (typeof v === "number" && isFinite(v) && v > 0) {
+      var d = new Date(v * 1000);
+      return isNaN(d.getTime()) ? "" : formatDate(d.toISOString());
+    }
+    return formatDate(v);
   }
 
   /* Ask the API for a Square checkout for this website and plan, then go there.
@@ -292,6 +363,12 @@
     planName: planName,
     dollars: dollars,
     plansById: plansById,
+    priceText: priceText,
+    fillPlanTerms: fillPlanTerms,
+    loadPlans: loadPlans,
+    renewalTerms: renewalTerms,
+    fillRenewalPrice: fillRenewalPrice,
+    formatWhen: formatWhen,
     orderIdFrom: orderIdFrom,
     reportHref: reportHref,
     dashboardHref: dashboardHref,

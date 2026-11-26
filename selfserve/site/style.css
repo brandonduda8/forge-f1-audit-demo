@@ -313,6 +313,10 @@ td.num, th.num { text-align: right; white-space: nowrap; }
   .result, .box, .finding { padding-left: 20px; padding-right: 20px; }
 }
 
+/* Monthly Monitoring renewal terms (dashboard and report page); kept when printed */
+.renewal-terms { border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin: 24px 0; }
+.renewal-terms h2 { margin-top: 0; }
+
 /* Print: used mainly by report.html */
 @media print {
   :root {
@@ -323,7 +327,7 @@ td.num, th.num { text-align: right; white-space: nowrap; }
   .site-header, .site-footer, .no-print, .btn, .btn-row, .skip, nav { display: none !important; }
   .wrap { max-width: none; padding: 0; }
   section { padding: 12px 0; }
-  .finding, .box, .result { border-color: #BBBBBB; break-inside: avoid; }
+  .finding, .box, .result, .renewal-terms { border-color: #BBBBBB; break-inside: avoid; }
   .grade, .sev { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .bar, .bar > span { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   a { color: #000000; text-decoration: none; }

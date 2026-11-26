@@ -1,7 +1,11 @@
-{"ok": true, "days": 30, "orders": 3, "gross_cents": 12700, "refunded_cents": 2900, "net_cents": 9800,
- "by_plan": {"checkup": {"count": 1, "gross_cents": 2900}, "pro": {"count": 1, "gross_cents": 7900}, "monitor": {"count": 1, "gross_cents": 1900}},
- "active_subscriptions": 1, "mrr_cents": 1900,
- "recent": [{"created": "2026-11-25T10:00:00+00:00", "plan": "pro", "amount_cents": 7900, "site": "roof.example", "refunded": false},
-            {"created": "2026-11-24T10:00:00+00:00", "plan": "checkup", "amount_cents": 2900, "site": "bakery.example", "refunded": true}],
- "counters": {"free_checks": 40, "checkouts_started": 6, "reports_delivered": 3},
- "monitoring": {"last_run_at": "2026-11-26T06:00:00+00:00", "checked": 1, "emailed": 1, "errors": 0}}
+{"ok": true,
+ "counters": {"free_checks": 40, "checkouts_started": 6, "reports_delivered": 3, "since": 1795600000.25},
+ "monitoring": {"running": false,
+                "last_run": {"started": 1795731516.4, "finished": 1795731581.9,
+                             "counts": {"sites": 2, "scanned": 1, "skipped_recent": 1, "not_checked": 0, "emails_sent": 1, "emails_skipped": 0}}},
+ "sales": {"days": 30, "orders": 3, "gross_cents": 15700, "refunded_cents": 2900, "net_cents": 12800,
+           "by_plan": {"checkup": {"count": 1, "gross_cents": 2900}, "pro": {"count": 1, "gross_cents": 7900}, "monitor": {"count": 1, "gross_cents": 4900}},
+           "active_subscriptions": 1, "cancelling": 1, "mrr_cents": 1900, "truncated": false,
+           "recent": [{"created": "2026-11-25T10:00:00Z", "plan": "monitor", "amount_cents": 2900, "site": "plumber.example", "refunded": false},
+                      {"created": "2026-11-24T16:30:00Z", "plan": "pro", "amount_cents": 7900, "site": "roof.example", "refunded": false},
+                      {"created": "2026-11-20T09:15:00Z", "plan": "checkup", "amount_cents": 2900, "site": "bakery.example", "refunded": true}]}}
