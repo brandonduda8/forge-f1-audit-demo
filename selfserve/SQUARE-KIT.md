@@ -27,10 +27,15 @@ In Render, open the Apex Forge API service, go to **Environment**, and add:
 | `SQUARE_ACCESS_TOKEN` | the sandbox access token |
 | `SQUARE_LOCATION_ID` | the location id |
 
-Prices are optional. The defaults are `CHECKUP_PRICE_CENTS=2900` ($29), `PRO_PRICE_CENTS=7900` ($79),
-`MONITOR_FIRST_CENTS=2900` (the first month of monitoring, $29, which includes the full report) and
-`MONITOR_PRICE_CENTS=1900` ($19 every month after that). Prices are in cents.
-Keep the first month at least the Checkup price, so monitoring never undercuts the Checkup (`doctor` warns if it does).
+Prices are optional. The defaults are `CHECKUP_PRICE_CENTS=2900` ($29), `PRO_PRICE_CENTS=7900` ($79) and
+`MONITOR_PRICE_CENTS=2900` ($29 a month for Monthly Monitoring, first month included; the first month includes the
+full report). Prices are in cents.
+
+There is an optional intro price, but it's **not confirmed to work with Square's checkout** (see "What I couldn't
+confirm", item 9). If `MONITOR_FIRST_CENTS` differs from `MONITOR_PRICE_CENTS`, the plan gets two phases: the first
+month at `MONITOR_FIRST_CENTS`, then `MONITOR_PRICE_CENTS` every month. Leave `MONITOR_FIRST_CENTS` unset (it
+defaults to $29) unless you've tested month two in sandbox. Keep the first month at least the Checkup price, so
+monitoring never undercuts the Checkup (`doctor` warns if it does).
 
 Don't set `SQUARE_API_BASE`. It's only for the kit's own tests: outside tests it's ignored (an `http://` value is refused).
 
@@ -60,17 +65,17 @@ In the same terminal:
 python3 selfserve/api/square_cli.py create-monitor-plan
 ```
 
-This creates one subscription plan in your Square catalog, "Apex Forge Monthly Monitoring", with two monthly phases:
-the first month at `MONITOR_FIRST_CENTS`, then every month after at `MONITOR_PRICE_CENTS` until the buyer cancels.
-The last line the command prints is the plan **variation id**.
+This creates one subscription plan in your Square catalog, "Apex Forge Monthly Monitoring": one monthly price,
+`MONITOR_PRICE_CENTS`, charged every month until the buyer cancels. That's the setup Square's checkout documents.
+(Only if you've set an intro price does it make two phases instead; `doctor` then warns you to test month two in
+sandbox first.) The last line the command prints is the plan **variation id**.
 Copy it into Render as `SQUARE_MONITOR_PLAN_VARIATION_ID`, then save. Run `doctor` again. It should now say
-"Monthly Monitoring plan found: $29.00 for the first month, then $19.00 a month". The Monthly Monitoring option
-appears on the site only after this step, and only while buyer emails are switched on (the buyer needs a copy of
-the renewal terms and the cancel link).
+"Monthly Monitoring plan found: $29.00 a month". The Monthly Monitoring option appears on the site only after this
+step, and only while buyer emails are switched on (the buyer needs a copy of the renewal terms and the cancel link).
 
-If you change either monitoring price later, `doctor` reports which phase no longer matches. A plan made by an
-older version of the kit (one phase only) also shows a FAIL line. Run `create-monitor-plan --force` to make a plan
-at the new prices, then paste the new variation id into Render. Existing subscribers stay on the old plan.
+If you change a monitoring price later, or a plan's shape no longer matches your settings (one price vs. an intro
+price), `doctor` shows a FAIL line. Run `create-monitor-plan --force` to make a plan at the new prices, then paste
+the new variation id into Render. Existing subscribers stay on the old plan.
 
 Other commands:
 
@@ -151,7 +156,7 @@ I checked these against Square's developer docs and forum answers from Square st
 6. **Plan price field.** The kit sets the plan price in the phase's `pricing.price_money`, as Square's SubscriptionPricing reference says. An older doc example shows `price` instead. `doctor` accepts either when it reads the plan back.
 7. **Search details.** The docs pages for SearchOrders and SearchSubscriptions hide some filter details, so two of the filters the kit uses are unconfirmed: SearchOrders' `customer_filter`, and SearchSubscriptions' `location_ids` and `customer_ids`. The kit re-checks location and plan on every result anyway. It's also unclear whether SearchOrders returns orders still in DRAFT. Paid orders aren't affected.
 8. **Old checkouts.** A payment counts in `sales` only if its order was created up to 3 days before the report window starts. A checkout page left open longer than that before paying would be missed in that window.
-9. **Two paid phases on a checkout link (important).** Square's Checkout docs say subscription payment links support "only subscription plan variations with one paid phase (or one free phase and one paid phase)". This version's plan has two paid phases ($29 first month, then $19), as decided for launch. A Square forum thread also reports a checkout subscription that kept billing its first-phase price. So in sandbox, before selling monitoring: (a) check that Square accepts the link at all (if it doesn't, the buyer sees "try again" and nothing is charged), and (b) check in Square Dashboard what the subscription will charge in month two. If either is wrong, don't sell monitoring with this plan.
+9. **The optional intro price (two paid phases).** Square's Checkout docs say subscription payment links support "only subscription plan variations with one paid phase (or one free phase and one paid phase)". That's why the default is one price ($29 a month). If you set an intro price (`MONITOR_FIRST_CENTS` different from `MONITOR_PRICE_CENTS`), the plan has two paid phases, which Square doesn't document for checkout. A Square forum thread also reports a checkout subscription that kept billing its first-phase price. Before selling with an intro price, test in sandbox: (a) check that Square accepts the link at all (if it doesn't, the buyer sees "try again" and nothing is charged), and (b) check in Square Dashboard what the subscription charges in month two. If either is wrong, go back to one price.
 10. **Where the first month is charged.** Square's docs say the checkout "charges the buyer's card on file for the first priced subscription phase", but not whether that payment lands on the link's order or on a subscription invoice of its own. The kit expects it on the link's order. If it isn't there, the kit accepts the subscription's **first invoice** instead (GET /v2/invoices/{id}: the oldest id in the subscription's `invoice_ids`), but only when the subscription is current, the pairing is unambiguous, the invoice names that subscription, your location and that customer, its status is PAID (or since refunded), and its order's payment is COMPLETED for at least the first-month price. Anything else is refused. For an order with no payment of its own, "payment time" for pairing falls back to when Square last updated the order, which is also unconfirmed.
 11. **"Charged through" isn't "paid".** Square describes `charged_through_date` as the date through which the subscriber has been invoiced. An emailed invoice that's still unpaid may already move it forward, so "current" can include a subscription whose latest invoice isn't paid yet. Subscriptions with a card on file (what the checkout sets up) are charged straight away, so this should be rare.
 12. **Customer search by email.** `find_monitor_orders` uses SearchCustomers with an exact email filter. The docs don't say whether that match ignores capital letters, so the kit searches the address as typed and in lower case. A profile saved with different capitals might still be missed.

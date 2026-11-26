@@ -483,10 +483,10 @@ class FakeSquare:
         self.subscriptions[sub_id] = s
         return s
 
-    def add_plan_variation(self, cents=1900, cadence="MONTHLY", first_cents=2900, phases=2):
+    def add_plan_variation(self, cents=2900, cadence="MONTHLY", first_cents=2900, phases=1):
         """A SUBSCRIPTION_PLAN + its STATIC variation straight in the catalog; returns the variation id.
-        phases=2 (the default): first month at first_cents (periods 1), then cents every month.
-        phases=1: one never-ending phase at cents (the older single-price plan)."""
+        phases=1 (the default): one never-ending phase at cents.
+        phases=2: an intro first month at first_cents (periods 1), then cents every month."""
         self._n += 1
         plan_id, var_id = "CATPLAN%017d" % self._n, "CATVAR%018d" % self._n
         self.catalog[plan_id] = {"id": plan_id, "type": "SUBSCRIPTION_PLAN", "is_deleted": False,

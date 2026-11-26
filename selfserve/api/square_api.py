@@ -7,8 +7,11 @@ switched on). This module only talks to Square's API.
 Plans (PLANS below; prices come from env, never from the browser):
   checkup  one-time  Website Checkup                       CHECKUP_PRICE_CENTS  (2900)
   pro      one-time  Pro Checkup (homepage + 4 more pages)  PRO_PRICE_CENTS      (7900)
-  monitor  monthly   Monthly Monitoring: first month MONITOR_FIRST_CENTS (2900, includes the
-                     full report), then MONITOR_PRICE_CENTS (1900) every month
+  monitor  monthly   Monthly Monitoring: MONITOR_PRICE_CENTS (2900) every month, first month
+                     included (it includes the full report). Optional intro price: set
+                     MONITOR_FIRST_CENTS to something else for a two-phase plan (first month at
+                     MONITOR_FIRST_CENTS, then MONITOR_PRICE_CENTS); Square's checkout documents only
+                     one paid phase, so that option is unconfirmed (doctor warns).
   "monitor" is offered only when SQUARE_MONITOR_PLAN_VARIATION_ID is set (the server also
   hides it unless buyer emails are on).
 
@@ -90,7 +93,7 @@ PLANS = {
     "pro": {"label": "Pro Checkup (homepage + up to 4 more pages)", "price_env": "PRO_PRICE_CENTS",
             "default_cents": 7900, "kind": "one_time", "mode": "pro"},
     "monitor": {"label": "Monthly Monitoring (full report now, re-checked every month, alerts on changes)",
-                "price_env": "MONITOR_PRICE_CENTS", "default_cents": 1900, "kind": "subscription",
+                "price_env": "MONITOR_PRICE_CENTS", "default_cents": 2900, "kind": "subscription",
                 "mode": "full", "first_env": "MONITOR_FIRST_CENTS", "default_first_cents": 2900},
 }
 
@@ -133,7 +136,8 @@ def monitor_variation_id():
 def plan_info(plan_id):
     """{"id","label","cents","first_cents","kind","mode","available"} or None for an unknown plan.
 
-    cents is the plan's price (for "monitor": every month after the first); first_cents is
+    cents is the plan's price (for "monitor": every month after the first, and the first too
+    unless MONITOR_FIRST_CENTS sets an intro price); first_cents is
     what the first payment must be at least (equal to cents for one-time plans)."""
     p = PLANS.get(plan_id) if isinstance(plan_id, str) else None
     if not p:
@@ -1225,33 +1229,49 @@ def _check_setup(res):
     res.extend(_check_phases(_variation_phases(obj), mon["first_cents"], mon["cents"]))
 
 
+TWO_PHASE_WARNING = ("Square's checkout documents only one paid phase, so test month two in sandbox "
+                     "(what Square charges after the first month) before selling monitoring")
+
+
 def _check_phases(phases, first, monthly):
-    """The plan must be: phase 0 monthly for 1 period at `first`, then phase 1 monthly with
-    no end at `monthly`, both STATIC."""
-    shape_ok = (len(phases) == 2
-                and all(p["cadence"] == "MONTHLY" and p["type"] == "STATIC" for p in phases)
+    """With one price (first == monthly) the plan must be one never-ending MONTHLY STATIC phase
+    at that price. With an intro price it must be phase 0 MONTHLY for 1 period at `first`,
+    then phase 1 MONTHLY with no end at `monthly`, both STATIC (plus a WARN: unconfirmed
+    with Square's checkout)."""
+    monthly_static = all(p["cadence"] == "MONTHLY" and p["type"] == "STATIC" for p in phases)
+    redo = ("Run create-monitor-plan --force and paste the new variation id")
+    if first == monthly:
+        if len(phases) == 1 and monthly_static and not phases[0]["periods"]:
+            if phases[0]["cents"] != monthly:
+                return [("FAIL", f"the plan variation charges {phases[0]['cents']} cents a month "
+                                 f"but MONITOR_PRICE_CENTS is {monthly}")]
+            return [("OK", f"Monthly Monitoring plan found: {_dollars(monthly)} a month")]
+        return [("FAIL", f"the plan variation isn't one plain monthly price of {_dollars(monthly)}. " + redo)]
+    shape_ok = (len(phases) == 2 and monthly_static
                 and phases[0]["periods"] == 1 and not phases[1]["periods"])
     if not shape_ok:
-        return [("FAIL", "the plan variation isn't this version's two-phase plan (first month "
-                         f"{_dollars(first)}, then {_dollars(monthly)} every month). Run "
-                         "create-monitor-plan --force and paste the new variation id")]
-    out = []
+        return [("FAIL", "the plan variation isn't the two-phase plan your settings ask for (first month "
+                         f"{_dollars(first)}, then {_dollars(monthly)} every month). " + redo)]
+    out = [("WARN", TWO_PHASE_WARNING)]
     if phases[0]["cents"] != first:
         out.append(("FAIL", f"the plan variation charges {phases[0]['cents']} cents for the first month "
                             f"but MONITOR_FIRST_CENTS is {first}"))
     if phases[1]["cents"] != monthly:
         out.append(("FAIL", f"the plan variation charges {phases[1]['cents']} cents a month after the first "
                             f"but MONITOR_PRICE_CENTS is {monthly}"))
-    if not out:
+    if len(out) == 1:
         out.append(("OK", f"Monthly Monitoring plan found: {_dollars(first)} for the first month, "
                           f"then {_dollars(monthly)} a month"))
     return out
 
 
 def create_monitor_plan(cents=None, first_cents=None):
-    """Make the catalog SUBSCRIPTION_PLAN and its two-phase variation (no items):
-    phase 0 MONTHLY for 1 period at first_cents (MONITOR_FIRST_CENTS), then phase 1 MONTHLY
-    with no end at cents (MONITOR_PRICE_CENTS). Both STATIC.
+    """Make the catalog SUBSCRIPTION_PLAN and its variation (no items).
+
+    first_cents == cents (the default): one never-ending MONTHLY STATIC phase at cents, the
+    shape Square's checkout documents. Otherwise two phases: phase 0 MONTHLY for 1 period at
+    first_cents (MONITOR_FIRST_CENTS), then phase 1 MONTHLY with no end at cents
+    (MONITOR_PRICE_CENTS), both STATIC; unconfirmed with Square's checkout.
 
     {"plan_id","variation_id","cents","first_cents"}. The caller (square_cli.py) guards production."""
     info = plan_info("monitor")
@@ -1280,7 +1300,8 @@ def create_monitor_plan(cents=None, first_cents=None):
         "type": "SUBSCRIPTION_PLAN_VARIATION", "id": "#apex-monitor-monthly",
         "subscription_plan_variation_data": {
             "name": "Monthly", "subscription_plan_id": plan_id,
-            "phases": [phase(0, first_cents, periods=1), phase(1, cents)]}}}
+            "phases": ([phase(0, cents)] if first_cents == cents
+                       else [phase(0, first_cents, periods=1), phase(1, cents)])}}}
     code, out = _request("POST", "/v2/catalog/object", var_body)
     var_id = (out.get("catalog_object") or {}).get("id") or ""
     if code != 200 or not CATALOG_ID_RE.match(var_id):
