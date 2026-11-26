@@ -1,5 +1,5 @@
 {"ok": true, "plans": [
   {"id": "checkup", "label": "Website Checkup", "cents": 2900, "kind": "one_time", "available": true},
   {"id": "pro", "label": "Pro Checkup (homepage + up to 4 more pages)", "cents": 7900, "kind": "one_time", "available": true},
-  {"id": "monitor", "label": "Monthly Monitoring (full report now, re-checked every month, alerts on changes)", "cents": 1900, "kind": "subscription", "available": true}
+  {"id": "monitor", "label": "Monthly Monitoring (full report now, re-checked every month, alerts on changes)", "cents": 1900, "first_cents": 2900, "kind": "subscription", "available": true}
 ]}

@@ -121,6 +121,7 @@
       each(doc, '[data-if-plan="' + id + '"]', function (n) { n.hidden = !available; });
       each(doc, '[data-if-no-plan="' + id + '"]', function (n) { n.hidden = available; });
     });
+    C.fillPlanTerms(doc, plans);
     if (plans && plans.checkup && plans.checkup.cents) {
       cfg.price = C.dollars(plans.checkup.cents);
       each(doc, "[data-price]", function (n) { n.textContent = cfg.price; });
@@ -132,14 +133,11 @@
       .some(function (sel) { return doc.querySelectorAll(sel).length > 0; });
   }
 
+  /* Resolves the plans it applied (plansById), or null when /api/plans couldn't be read. */
   function loadPlans(doc, cfg) {
-    return C.fetchJson(cfg.apiBase + "/api/plans", { method: "GET" }, 60000, null).then(function (r) {
-      var ok = r.status === 200 && r.data && r.data.ok === true && Array.isArray(r.data.plans);
-      applyPlans(doc, ok ? C.plansById(r.data) : null, cfg);
-      return ok;
-    }, function () {
-      applyPlans(doc, null, cfg);
-      return false;
+    return C.loadPlans(cfg).then(function (plans) {
+      applyPlans(doc, plans, cfg);
+      return plans;
     });
   }
 
@@ -166,10 +164,28 @@
     var pricingHref = doc.getElementById("price") ? "#price" : "index.html#price";
 
     // Until GET /api/plans answers, only the one-time checkup can be bought.
-    if (usesPlans(doc)) {
+    var plansKnown = false, plansNow = null;
+    function initialButtons() {
       each(doc, "[data-buy-plan]", function (n) { n.disabled = !(cfg.payOk && n.getAttribute("data-buy-plan") === "checkup"); });
-      if (cfg.apiOk) loadPlans(doc, cfg);
-      else applyPlans(doc, null, cfg);
+    }
+    if (usesPlans(doc)) {
+      initialButtons();
+      if (cfg.apiOk) loadPlans(doc, cfg).then(function (p) { plansKnown = true; plansNow = p; });
+      else { applyPlans(doc, null, cfg); plansKnown = true; }
+    }
+
+    // Back from Square's checkout: the browser may restore this page from its cache with the
+    // plan buttons still disabled from the click. Put them back as the plans say.
+    if (win && typeof win.addEventListener === "function") {
+      win.addEventListener("pageshow", function (ev) {
+        if (!ev || !ev.persisted) return;
+        if (usesPlans(doc)) { if (plansKnown) applyPlans(doc, plansNow, cfg); else initialButtons(); }
+        var bb = doc.getElementById("buy-btn");
+        if (bb && !usesPlans(doc)) bb.disabled = !cfg.payOk;
+        each(doc, "[data-buy-checked]", function (n) { n.disabled = !cfg.payOk; });
+        [doc.getElementById("buy-status")].concat(Array.prototype.slice.call(doc.querySelectorAll("[data-buy-status]")))
+          .forEach(function (n) { if (n) { n.hidden = true; n.textContent = ""; } });
+      });
     }
 
     // Buying: our API makes a Square checkout for the website and plan, then the browser goes there.

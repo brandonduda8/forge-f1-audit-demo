@@ -12,7 +12,10 @@ scripts, fonts, images, CDNs, analytics or trackers. The only build step writes
    `POST {APEX_API_BASE}/api/checkout` as `{"url", "plan"}`. Plans and prices come from
    `GET {APEX_API_BASE}/api/plans` at runtime: until it answers only the one-time Website Checkup
    can be bought (at `APEX_PRICE`), Pro needs the API to list it as available, and the Monthly
-   Monitoring card stays hidden unless the API lists it as available. The API creates a Square payment link whose
+   Monitoring card stays hidden unless the API lists it as available (the API only sells it while buyer
+   emails are on). Monitoring has two prices, shown everywhere it is described as "$29 for the first
+   month, then $19 a month" from the plan's `first_cents` and `cents` (`data-plan-terms`,
+   `data-plan-first-price`, `data-plan-price`; the pages' own text is the fallback). The API creates a Square payment link whose
    order holds the website, and returns its URL and the order id. The page checks the
    URL is Square's own (`square.link`, `checkout.square.site`, `squareup.com`,
    `squareupsandbox.com`), saves the order id in this browser, and goes there.
@@ -22,10 +25,13 @@ scripts, fonts, images, CDNs, analytics or trackers. The only build step writes
    `GET {APEX_API_BASE}/api/report?order_id=...`; and shows the full report, a Download PDF
    link and a Print button. If the site can't be reached the page offers an automatic refund
    via `POST {APEX_API_BASE}/api/refund`.
-4. `find.html` gets a lost link back from the email paid with plus the website.
+4. `find.html` gets a lost link back from the email paid with plus the website. When the API answers
+   `{"ok": true, "emailed": true}` (buyer emails on) the links went to that inbox and the page shows none.
 5. `dashboard.html?order_id=...` (linked from the report page and Find my report) shows the plan,
    the report link, check history, the latest changes and the subscription; Monthly Monitoring can
-   be cancelled there after an in-page confirmation (`POST /api/cancel`).
+   be cancelled there after an in-page confirmation (`POST /api/cancel`); the Monitoring section then
+   updates in place ("Ends on"). Monitoring orders (also refunded ones) get a printable renewal-terms
+   block, also shown on the report page when the report response says `"plan": "monitor"`.
 6. `admin.html` is the owner's page (noindex). Paste `ADMIN_TOKEN`; it is kept in
    `sessionStorage` only (never localStorage or a URL) and sent as `Authorization: Bearer ...` to
    `/api/admin/summary` and `/api/admin/run-monitoring`. Log out removes it.
@@ -116,7 +122,9 @@ node tests/contract.mjs tests/fixtures/mini.json tests/fixtures/report-pro.json 
 ```
 
 `contract.mjs` checks each API response against the shape the pages are built for, then renders
-it. The API's end-to-end test feeds it real responses; `tests/fixtures/` holds hand-written ones.
+it. The API's end-to-end test feeds it real responses. `tests/fixtures/` holds copies of the server's
+real shapes; `test_site.py::test_fixtures_match_what_the_server_really_returns` builds the dashboard and
+admin responses with the server's own code (Square faked) and checks the fixtures still match.
 
 The tests check HTML structure, page metadata and CSP, external URLs, inline
 scripts, `innerHTML`, `build_config.py` validation, and that hostile API strings
