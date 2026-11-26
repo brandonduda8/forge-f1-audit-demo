@@ -1,4 +1,4 @@
-# Launch taps: Apex Forge (Checkup $29, Pro $79, Monthly Monitoring $19/month, all on Square)
+# Launch taps: Apex Forge (Checkup $29, Pro $79, Monthly Monitoring $29 first month then $19/month, all on Square)
 
 Everything is built and tested against a stand-in Square. Nothing is deployed, published or connected.
 These are the steps only Brandon can do, in order. Sandbox first, so no real money moves until step 6.
@@ -26,8 +26,9 @@ checks), the payments kit PR, then the v2 PR. Close the old Stripe PR 3 without 
 Follow `selfserve/SQUARE-KIT.md`. In short:
 1. Developer Console → your app → **Sandbox** → copy the access token and a location id into Render.
 2. On your own computer, run `square_cli.py doctor`, then `square_cli.py create-monitor-plan`, and paste the
-   variation id it prints into Render as `SQUARE_MONITOR_PLAN_VARIATION_ID`. The monitoring plan appears on the
-   site only after this.
+   variation id it prints into Render as `SQUARE_MONITOR_PLAN_VARIATION_ID`. The plan it makes charges
+   `MONITOR_FIRST_CENTS` ($29) the first month, then `MONITOR_PRICE_CENTS` ($19) each month, and `doctor` checks
+   both match Render. The monitoring plan appears on the site only after this and after step 5's emails are on.
 3. Add the webhook subscription (four events) and put its signature key and URL into Render.
 
 ## 4. Test it yourself in the sandbox (about 15 min)
@@ -36,23 +37,31 @@ Follow `selfserve/SQUARE-KIT.md`. In short:
 3. Open **Your dashboard** from the report page. Open `admin.html`, paste your `ADMIN_TOKEN`, and check the sale shows.
 4. Buy once with website `nosuchsite.invalid` and press **Refund me automatically**.
 5. Monthly Monitoring only partly works in Square's sandbox (Square's own staff say so). If it won't complete,
-   test it in step 6 with real money and refund yourself.
+   test it in step 6 with real money and refund yourself. Don't sell it until that real test has passed.
 
-## 5. Optional: buyer emails and the monthly re-check
-- **Emails** (report ready, monthly check): off until you switch them on. Set `MAIL_BACKEND=smtp` and the `SMTP_*`
+## 5. Buyer emails and the monthly re-check (needed only to sell Monthly Monitoring)
+The Checkup and Pro sell without this. Monthly Monitoring stays hidden until emails are on, because buyers need
+a copy of the renewal terms and a way to get their cancel link back.
+- **Emails** (report ready, monthly check, and "find my report" links): set `MAIL_BACKEND=smtp` and the `SMTP_*`
   and `MAIL_FROM` values (a free Gmail with an app password works), then set the site's `APEX_EMAILS=on`.
   Only buyers get them, and each has a link to manage or cancel.
 - **Monthly re-check**: in GitHub → repo **Settings → Secrets and variables → Actions**, add `APEX_API_BASE` and
   `APEX_ADMIN_TOKEN` (the same owner password). The daily `apex-monitor` workflow then wakes the server and
   re-checks each monitored site once its last check is 25+ days old. Without the secrets it does nothing.
   You can also press **Run monitoring now** on the owner page.
+- GitHub pauses scheduled workflows on a public repo after 60 days with no commits. If that happens, open
+  **Actions → apex-monitor → Enable workflow**, or press **Run monitoring now** on the owner page.
 
 ## 6. Go live — this is the publish moment
 1. Developer Console → **Production**: copy the production token and location id into Render, set
    `SQUARE_ENV=production`, run `create-monitor-plan --production`, paste the new variation id, and add the
    production webhook with its new signature key. Manual Deploy both services.
 2. Do one real purchase on your own site (set `CHECKUP_PRICE_CENTS=100` first for a $1 test), check the report
-   loads, then refund yourself in the Square Dashboard. Set the price back to `2900`.
+   loads, then press **Refund me automatically** or refund in the Square Dashboard. Set the price back to `2900`.
+3. Before selling Monthly Monitoring, do the same once with it: make a $1 test plan (`MONITOR_FIRST_CENTS=100`,
+   `MONITOR_PRICE_CENTS=100`, then `create-monitor-plan --production`), buy it, check the report and dashboard
+   load and the "report ready" email arrives, press **Cancel monitoring**, and refund yourself. Then put the
+   prices back, make the real plan again and paste its variation id.
 
 ## 7. Read the legal pages (10 min)
 `privacy.html` and `terms.html` are drafts marked "not legal advice". They now cover the monthly plan
@@ -60,5 +69,7 @@ Follow `selfserve/SQUARE-KIT.md`. In short:
 
 ## Good to know
 - Render's free disk is wiped when the service redeploys, so a buyer's scan history on the dashboard can reset.
-  Money, orders and subscriptions always come from Square, so sales, refunds and cancellations are never lost.
+  Money, orders, subscriptions and each site's monthly marker are kept on Square, so sales, refunds,
+  cancellations and "one email a month" are never lost.
+- Refunding a monitoring order stops its renewal first. If Square won't stop it, the refund waits.
 - Square takes its processing fee from each payment. Check the first real payment's fee in your Square Dashboard.
