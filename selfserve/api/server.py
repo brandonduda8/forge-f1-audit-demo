@@ -5,12 +5,17 @@ Endpoints (all JSON unless noted; CORS allowed for SITE_ORIGIN only):
   GET  /health                         {"ok": true}  (the page calls this to wake a sleeping free server)
   POST /api/check   {"url": "..."}     free mini-check: grade, score, top 3 problem titles
   GET  /api/plans                      the plans on sale: [{"id","label","cents","kind","available"}]
+                                       (monitor also has "first_cents"; it is on sale only while
+                                       buyer emails are on, so every buyer gets the renewal terms)
   POST /api/checkout {"url", "plan"}   makes a Square hosted checkout for that website and plan
                                        (plan: checkup (default) | pro | monitor); returns its URL
   GET  /api/report?order_id=...        paid report for the website on that Square order
   GET  /api/report.pdf?order_id=...    the same report as a PDF (application/pdf)
   POST /api/refund  {"order_id": ...}  automatic full refund, only when the site could not be reached
-  POST /api/find    {"email", "website"} find a lost report link (paid orders for that email and site)
+                                       (a monitoring order's subscription is cancelled first)
+  POST /api/find    {"email", "website"} find a lost report link. Emails on: the links are emailed to
+                                       that address and the answer is always {"ok": true, "emailed": true}.
+                                       Emails off: the links come back in the answer (last 30 days).
   GET  /api/dashboard?order_id=...     the buyer's dashboard: plan, report link, scan history,
                                        latest changes, monitoring subscription
   POST /api/cancel  {"order_id": ...}  cancel Monthly Monitoring (Square ends it after the paid month)
@@ -34,10 +39,11 @@ Environment:
   CLIENT_IP_HEADER  optional: a header the host sets to the real client address (used first)
   FREE_WORKERS / PAID_WORKERS  concurrent checks of each kind (default 1 each)
   SQUARE_ACCESS_TOKEN, SQUARE_ENV, SQUARE_LOCATION_ID, SQUARE_WEBHOOK_SIGNATURE_KEY,
-  SQUARE_WEBHOOK_URL, CHECKUP_PRICE_CENTS, PRO_PRICE_CENTS, MONITOR_PRICE_CENTS,
+  SQUARE_WEBHOOK_URL, CHECKUP_PRICE_CENTS, PRO_PRICE_CENTS, MONITOR_FIRST_CENTS, MONITOR_PRICE_CENTS,
   SQUARE_MONITOR_PLAN_VARIATION_ID   see square_api.py
   ADMIN_TOKEN       owner token for /api/admin/*; admin is OFF unless it is at least 24 characters
-  APEX_DATA_DIR     where scan history lives (store.py; best effort, wiped on a Render free redeploy)
+  APEX_DATA_DIR     where scan history lives (store.py; a temporary disk on Render free: history is
+                    best effort, while money data and the monthly-monitoring marker live in Square)
   MAIL_BACKEND, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, MAIL_FROM, MAIL_REPLY_TO   see mailer.py
 """
 import hmac
@@ -83,7 +89,14 @@ _fatal = {}                     # order_id -> time the paid run could not reach 
 _hits = defaultdict(deque)      # rate-limit key -> deque of timestamps
 _inflight = {}                  # order_id -> lock, so parallel loads share one run
 _counters = {"free_checks": 0, "checkouts_started": 0, "reports_delivered": 0}   # since this process started
+_refunded = OrderedDict()       # order_id -> time: refunded here, never cache a report for it again
+_not_ours = OrderedDict()       # order_id -> time: a webhook for a payment that isn't an Apex order
+_ready_sent = OrderedDict()     # order_id -> time: report-ready email went out (this process)
+_ready_lock = threading.Lock()  # one report-ready send at a time, so it goes out once
+_paid_waiting = 0               # buyers waiting for a paid worker (monitoring waits while > 0)
 MAX_CACHE = 500
+NOT_OURS_S = 600                # ignore repeated webhooks for a non-Apex order this long
+BACKGROUND_WAIT_S = 900         # how long a monitoring scan waits for a free paid worker
 
 def _env_int(name, default):
     try:
@@ -101,6 +114,7 @@ LIMITS = {                      # key prefix -> (max events, window seconds)
     "refund-session": (3, 3600),
     "find-ip": (10, 3600),
     "find-email": (5, 3600),
+    "find-mail": (2, 3600),     # "find my report" emails to one address
     "checkout-ip": (_env_int("LIMIT_CHECKOUT_PER_IP", 10), 3600),
     "checkout-all": (_env_int("LIMIT_CHECKOUT_TOTAL", 200), 3600),
     "dash-ip": (60, 3600),      # dashboard loads (each asks Square)
@@ -171,13 +185,11 @@ def worker_env():
     return env
 
 
-def run_checkup(mode, url, pool=None):
-    """Returns the runner's JSON, or {"ok": False, "busy": True} when full.
-    Free checks and paid reports have separate worker pools, so a burst of
-    free checks can never keep a paying buyer waiting."""
-    sem = POOLS[pool or ("free" if mode == "light" else "paid")]
-    if not sem.acquire(timeout=30 if mode == "light" else 90):
-        return {"ok": False, "busy": True, "error": "The checker is busy. Try again in a minute."}
+BUSY = {"ok": False, "busy": True, "error": "The checker is busy. Try again in a minute."}
+
+
+def _run_runner(mode, url):
+    """One audit in its own short-lived process (the caller holds a worker)."""
     try:
         p = subprocess.run([PY, "-I", RUNNER, mode, url], capture_output=True, text=True,
                            timeout=RUN_TIMEOUT[mode], env=worker_env(), cwd=HERE)
@@ -187,6 +199,51 @@ def run_checkup(mode, url, pool=None):
         return json.loads(line[-1])
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "The website took too long to answer. Try again in a minute."}
+
+
+def _waiting(delta):
+    global _paid_waiting
+    with _lock:
+        _paid_waiting += delta
+
+
+def run_checkup(mode, url, pool=None):
+    """Returns the runner's JSON, or {"ok": False, "busy": True} when full.
+    Free checks and paid reports have separate worker pools, so a burst of
+    free checks can never keep a paying buyer waiting. A buyer waiting for a
+    paid worker is counted, so the monthly monitoring run steps aside."""
+    name = pool or ("free" if mode == "light" else "paid")
+    sem = POOLS[name]
+    if name == "paid":
+        _waiting(+1)
+    try:
+        got = sem.acquire(timeout=30 if mode == "light" else 90)
+    finally:
+        if name == "paid":
+            _waiting(-1)
+    if not got:
+        return dict(BUSY)
+    try:
+        return _run_runner(mode, url)
+    finally:
+        sem.release()
+
+
+def background_run_checkup(mode, url):
+    """For the monitoring run: takes a paid worker only while no buyer is waiting for one,
+    so a buyer who is waiting always gets the next free worker."""
+    sem = POOLS["paid"]
+    end = time.time() + BACKGROUND_WAIT_S
+    while True:
+        with _lock:
+            waiting = _paid_waiting
+        if waiting == 0 and sem.acquire(blocking=False):
+            break
+        if time.time() > end:
+            return dict(BUSY)
+        time.sleep(0.2)
+    try:
+        return _run_runner(mode, url)
     finally:
         sem.release()
 
@@ -219,8 +276,25 @@ def _cached(sid):
     return None
 
 
-def paid_result(sid, ip="-"):
-    """(http status, payload) for a report request. Re-runs if not cached."""
+def _remember(store, key):
+    with _lock:
+        store[key] = time.time()
+        store.move_to_end(key)
+        while len(store) > 5000:
+            store.popitem(last=False)
+
+
+def _is_refunded(sid):
+    with _lock:
+        return sid in _refunded
+
+
+REFUNDED_MSG = "This payment was refunded, so this report link no longer works."
+
+
+def paid_result(sid, ip="-", trusted=False):
+    """(http status, payload) for a report request. Re-runs if not cached.
+    trusted: a signed Square webhook (doesn't spend the per-address bucket)."""
     hit = _cached(sid)
     if hit:
         return 200, public_report(sid, hit["result"])
@@ -230,11 +304,11 @@ def paid_result(sid, ip="-"):
         hit = _cached(sid)
         if hit:
             return 200, public_report(sid, hit["result"])
-        return _paid_run(sid, ip)
+        return _paid_run(sid, ip, trusted)
 
 
-def _paid_run(sid, ip):
-    if not allow("paid-ip", ip):
+def _paid_run(sid, ip, trusted=False):
+    if not trusted and not allow("paid-ip", ip):
         return 429, {"ok": False, "error": "Too many report requests. Try again in an hour."}
     try:
         sess = pay.get_paid_order(sid)
@@ -243,7 +317,9 @@ def _paid_run(sid, ip):
     except pay.SquareUnavailable:
         return 503, {"ok": False, "error": "We couldn't confirm the payment just now. Try again in a minute."}
     if sess.get("refunded"):
-        return 402, {"ok": False, "error": "This payment was refunded, so this report link no longer works."}
+        _remember(_refunded, sid)
+        _forget(sid)
+        return 402, {"ok": False, "error": REFUNDED_MSG}
     if not allow("paid-session", sid):
         return 429, {"ok": False, "error": "This report was just run several times. Try again in an hour."}
     res = run_checkup(PLAN_MODE[plan_of(sess)], sess["website"])
@@ -259,15 +335,38 @@ def _paid_run(sid, ip):
         return 503, {"ok": False, "error": res.get("error", "The check failed. Try again in a minute.")}
     with _lock:
         _fatal.pop(sid, None)
-    if not sess.get("delivered") and not pay.mark_delivered(sess):
+    if _is_refunded(sid):            # refunded while the check ran
+        return 402, {"ok": False, "error": REFUNDED_MSG}
+    first = not sess.get("delivered")
+    if first and not pay.mark_delivered(sess):
         sys.stderr.write("warning: could not record report delivery on the payment\n")
     _cache_put(_reports, sid, {"at": time.time(), "result": res})
     bump("reports_delivered")
-    record_scan(sid, res, "report")
+    plan = plan_of(sess)
+    # only the purchase report counts for monitoring; a buyer re-opening it later is a "view"
+    record_scan(sid, res, "report" if first else "view", plan)
+    start_state = plan == "monitor" and first and not (sess.get("monitor_state") or {}).get("last")
+    if start_state or (mailer.enabled() and not sess.get("ready_mailed")):
+        threading.Thread(target=_after_delivery, args=(sid, sess, res if start_state else None),
+                         daemon=True).start()
     return 200, public_report(sid, res)
 
 
-def record_scan(sid, res, source):
+def _after_delivery(sid, sess, purchase_res):
+    """Background, after the buyer has the report: start the monitoring clock on the Square
+    order (purchase scan of a monitoring plan), then send the report-ready email once."""
+    try:
+        if purchase_res is not None:
+            f = getattr(pay, "set_monitor_state", None)
+            if f is not None:
+                f(sess, last=int(time.time()), month=None, failing=monitor.ids_of(monitor.issues_of(purchase_res)),
+                  not_measured=monitor.not_measured_of(purchase_res))
+        send_report_ready(sid, sess)
+    except Exception as e:   # never takes the server down
+        sys.stderr.write(f"after-delivery step failed: {type(e).__name__}\n")
+
+
+def record_scan(sid, res, source, plan="checkup"):
     """Best effort: add this report to the order's history (skipped if one was saved in the last 6 hours,
     e.g. the same report re-run after a restart)."""
     st = data()
@@ -278,7 +377,7 @@ def record_scan(sid, res, source):
         if last and time.time() - last["at"] < 6 * 3600:
             return
         st.add_scan(sid, res.get("site") or "", res.get("grade"), res.get("score"), monitor.issues_of(res),
-                    source=source)
+                    source=source, plan=plan, not_measured=monitor.not_measured_of(res))
     except Exception as e:
         sys.stderr.write(f"could not save scan history: {type(e).__name__}\n")
 
@@ -293,6 +392,7 @@ def do_refund(sid):
     except pay.SquareUnavailable:
         return 503, {"ok": False, "error": "We couldn't reach the payment system. Try again in a minute."}
     if sess.get("refunded"):
+        _remember(_refunded, sid)
         _forget(sid)
         return 200, {"ok": True, "status": "succeeded"}
     with _lock:
@@ -309,14 +409,37 @@ def do_refund(sid):
             return 409, {"ok": False, "error": "Your website can be reached now. Reload this page to get your report."}
         if not (res.get("fatal") or res.get("input_error")):
             return 503, {"ok": False, "error": "We couldn't confirm the problem just now. Try again in a minute."}
+    if plan_of(sess) == "monitor":
+        stopped = _stop_renewal(sess)
+        if stopped is not None:
+            return stopped
     try:
         status = pay.refund(sess)
     except pay.PaymentError as e:
         return 402, {"ok": False, "error": str(e)}
     except pay.SquareUnavailable:
         return 503, {"ok": False, "error": "The refund didn't go through just now. Try again in a minute."}
+    _remember(_refunded, sid)
     _forget(sid)
     return 200, {"ok": True, "status": status}
+
+
+def _stop_renewal(sess):
+    """Before refunding a monitoring order: cancel its subscription, so no later month is charged.
+    None when it is cancelled (or already was); else the (503, payload) that refuses the refund."""
+    no = (503, {"ok": False, "error": "We couldn't stop the monthly renewal just now, so nothing was refunded "
+                                     "yet. Try again in a minute."})
+    try:
+        sub = pay.subscription_for_order(sess)
+        if not sub or not sub.get("id"):
+            return no
+        if sub.get("canceled_date") or str(sub.get("status") or "").upper() in ("CANCELED", "DEACTIVATED"):
+            return None
+        pay.cancel_subscription(sub["id"])
+        return None
+    except Exception as e:
+        sys.stderr.write(f"refund held: renewal not cancelled ({type(e).__name__})\n")
+        return no
 
 
 def _forget(sid):
@@ -340,6 +463,16 @@ def runner_normalize(raw):
 
 
 def find_reports(email, website):
+    """Emails on: the links go only to that address, in the background, and the answer is the
+    same whether or not anything was found (so it reveals nothing and opens nothing)."""
+    if mailer.enabled():
+        if not mailer.valid_address(email):
+            return 400, {"ok": False, "error": "Enter the email address you paid with."}
+        want = site_key(website)
+        if not want:
+            return 400, {"ok": False, "error": "Enter the website you bought the checkup for."}
+        threading.Thread(target=_email_links, args=(email, want), daemon=True).start()
+        return 200, {"ok": True, "emailed": True}
     try:
         found = pay.find_orders(email)
     except pay.PaymentError as e:
@@ -356,9 +489,43 @@ def find_reports(email, website):
         for h in hits[:5]]}
 
 
+def _email_links(email, want):
+    """Background: find this address's purchases for that site and email the links (never raises)."""
+    try:
+        found = list(pay.find_orders(email))
+        more = getattr(pay, "find_monitor_orders", None)
+        if more is not None:
+            try:
+                found += list(more(email))           # monitoring orders: no 30-day limit
+            except (pay.PaymentError, pay.SquareUnavailable):
+                pass
+        seen, hits = set(), []
+        for f in sorted(found, key=lambda x: -(x.get("created") or 0)):
+            if f.get("order_id") in seen or site_key(f.get("website") or "") != want:
+                continue
+            seen.add(f["order_id"])
+            hits.append({"order_id": f["order_id"], "site": want, "created": f.get("created")})
+        if hits and allow("find-mail", email):
+            mailer.send("find_links", email, items=hits[:mailer.FIND_MAX])
+    except Exception as e:
+        sys.stderr.write(f"find email skipped: {type(e).__name__}\n")
+
+
+def plans_on_sale():
+    """Square's plans, with Monthly Monitoring on sale only while buyer emails are on."""
+    plans = pay.public_plans()
+    mail_on = mailer.enabled()
+    for p in plans:
+        if p.get("id") == "monitor" and not mail_on:
+            p["available"] = False
+    return plans
+
+
 def start_checkout(raw_url, plan="checkup"):
     """Normalize the website first, so a buyer only ever pays for an address we can check."""
     if not PLAN_RE.match(plan or "") or plan not in PLAN_MODE:
+        return 400, {"ok": False, "error": "That plan isn't available."}
+    if plan == "monitor" and not mailer.enabled():        # the buyer must get the terms and cancel link
         return 400, {"ok": False, "error": "That plan isn't available."}
     try:
         url = runner_normalize(raw_url)
@@ -398,9 +565,11 @@ def dashboard(sid):
         return 400, {"ok": False, "error": "missing payment reference"}
     try:
         sess = pay.get_paid_order(sid)
-        if sess.get("refunded"):
-            return 402, {"ok": False, "error": "This payment was refunded, so this link no longer works."}
         plan = plan_of(sess)
+        refunded = bool(sess.get("refunded"))
+        # a refunded monitoring order still shows its subscription and can be cancelled: never a dead end
+        if refunded and plan != "monitor":
+            return 402, {"ok": False, "error": "This payment was refunded, so this link no longer works."}
         sub = pay.subscription_for_order(sess) if plan == "monitor" else None
     except pay.PaymentError as e:
         return 402, {"ok": False, "error": str(e)}
@@ -413,8 +582,8 @@ def dashboard(sid):
             history, changes = st.history(sid), st.latest_changes(sid)
         except Exception as e:
             sys.stderr.write(f"could not read scan history: {type(e).__name__}\n")
-    return 200, {"ok": True, "site": site_host(sess["website"]), "plan": plan,
-                 "report_path": "report.html?order_id=" + sid,
+    return 200, {"ok": True, "site": site_host(sess["website"]), "plan": plan, "refunded": refunded,
+                 "report_path": None if refunded else "report.html?order_id=" + sid,
                  "subscription": public_subscription(sub), "history": history, "latest_changes": changes}
 
 
@@ -488,52 +657,92 @@ def admin_summary(days_raw, with_sales=True):
 
 
 def _monitor_result(sid, res):
-    """A monitoring re-check finished: the report link now shows the new report."""
+    """A monitoring re-check finished: the report link now shows the new report
+    (never for an order refunded here; monitoring itself skips refunded orders)."""
+    if _is_refunded(sid):
+        return
     _cache_put(_reports, sid, {"at": time.time(), "result": res})
     with _lock:
         _pdfs.pop(sid, None)
 
 
+def _monitor_run(mode, url):
+    return background_run_checkup(mode, url)
+
+
 def start_monitoring():
-    if monitor.start_in_background(run_checkup, store=data(), on_result=_monitor_result):
+    if monitor.start_in_background(_monitor_run, store=data(), on_result=_monitor_result):
         return 202, {"ok": True, "started": True}
     return 409, {"ok": False, "error": "A monitoring run is already going."}
 
 
-def send_report_ready(order_id):
-    """Email the buyer that the report is ready, once per order. Never raises."""
+def monitor_terms():
+    """{"first_cents", "cents"} of Monthly Monitoring, for the renewal terms in the email."""
+    try:
+        info = pay.plan_info("monitor") or {}
+    except Exception:
+        info = {}
+    cents = info.get("cents")
+    return {"first_cents": info.get("first_cents") or cents, "cents": cents}
+
+
+def send_report_ready(order_id, sess=None):
+    """Email the buyer that the report is ready, once per order, even across a wiped disk
+    (the order's ready_mailed flag in Square is the durable mark). Never raises."""
     if not mailer.enabled():
         return False
-    st = data()
-    if st is None:
-        return False
     key = "report_ready:" + order_id
-    try:
-        if st.email_sent(key):
+    with _ready_lock:
+        with _lock:
+            if order_id in _ready_sent:
+                return False
+        st = data()
+        try:
+            if st is not None and st.email_sent(key):
+                return False
+            if sess is None:
+                sess = pay.get_paid_order(order_id)
+            if sess.get("ready_mailed"):
+                _remember(_ready_sent, order_id)
+                return False
+            to = (sess.get("buyer_email") or "").strip()
+            if sess.get("refunded") or not mailer.valid_address(to):
+                return False
+            plan = plan_of(sess)
+            ok = mailer.send("report_ready", to, order_id=order_id, site=site_host(sess["website"]),
+                             plan=plan, terms=monitor_terms() if plan == "monitor" else None)
+            if ok:
+                _remember(_ready_sent, order_id)
+                if st is not None:
+                    st.claim_email(key)
+                mark = getattr(pay, "mark_ready_mailed", None)
+                if mark is not None and not mark(sess):
+                    sys.stderr.write("warning: could not record the report email on the payment\n")
+            return ok
+        except Exception as e:
+            sys.stderr.write(f"report email skipped: {type(e).__name__}\n")
             return False
-        sess = pay.get_paid_order(order_id)
-        to = (sess.get("buyer_email") or "").strip()
-        if sess.get("refunded") or not mailer.valid_address(to) or not st.claim_email(key):
-            return False
-        ok = mailer.send("report_ready", to, order_id=order_id, site=site_host(sess["website"]),
-                         plan=plan_of(sess))
-        if not ok:
-            st.release_email(key)
-        return ok
-    except Exception as e:
-        sys.stderr.write(f"report email skipped: {type(e).__name__}\n")
-        return False
 
 
 def prewarm(order_id):
     """A payment completed: build the report now, so it's ready when the buyer lands,
-    then email the buyer once that it is ready."""
+    then email the buyer once that it is ready. A payment that isn't an Apex order
+    (a shop sale, a renewal invoice) stops at the payment check and is remembered for
+    a while, so Square's repeated events don't ask Square again and again."""
     try:
-        code, _ = paid_result(order_id, "webhook")
+        code, _ = paid_result(order_id, "webhook", trusted=True)
         if code == 200:
             send_report_ready(order_id)
+        elif code == 402:
+            _remember(_not_ours, order_id)
     except Exception as e:  # a background run must never take the server down
         sys.stderr.write(f"prewarm failed: {type(e).__name__}\n")
+
+
+def _recently_not_ours(oid):
+    with _lock:
+        t = _not_ours.get(oid)
+    return t is not None and time.time() - t < NOT_OURS_S
 
 
 def event_kind(event):
@@ -552,16 +761,19 @@ def handle_webhook(raw, signature):
     except Exception:
         return 400, {"ok": False}
     kind, oid = event_kind(event)
-    if kind == "payment_completed" and oid and pay.ORDER_RE.match(oid):
+    if kind == "payment_completed" and oid and pay.ORDER_RE.match(oid) and not _recently_not_ours(oid):
         if _cached(oid) is None or (mailer.enabled() and not _emailed(oid)):
             threading.Thread(target=prewarm, args=(oid,), daemon=True).start()
     return 200, {"ok": True}
 
 
 def _emailed(oid):
+    with _lock:
+        if oid in _ready_sent:
+            return True
     st = data()
     try:
-        return st is None or st.email_sent("report_ready:" + oid)
+        return st is not None and st.email_sent("report_ready:" + oid)
     except Exception:
         return True
 
@@ -641,7 +853,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "service": "apex-checkup-api"})
         if p.path == "/api/plans":
             try:
-                plans = pay.public_plans()
+                plans = plans_on_sale()
             except (pay.SquareUnavailable, pay.PaymentError):
                 return self._send(503, {"ok": False, "error": "Plans are not available just now."})
             return self._send(200, {"ok": True, "plans": plans})

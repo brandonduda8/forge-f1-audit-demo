@@ -66,7 +66,10 @@ class FakePay:
             OID_OLD: {"website": "https://old.example/"},                      # no plan field
             OID_REFUNDED: {"website": "https://gone.example/", "plan": "checkup", "refunded": True},
         }
-        self.checkouts, self.cancels, self.summaries = [], [], []
+        self.checkouts, self.cancels, self.summaries, self.refunds, self.events = [], [], [], [], []
+        self.state, self.ready, self.state_writes = {}, set(), []
+        self.found, self.found_monitor = [], []
+        self.cancel_fails = False
         self.sub = {"id": SUB, "status": "ACTIVE", "start_date": "2026-01-01",
                     "charged_through_date": "2026-02-01", "canceled_date": None}
         self.sites = [{"subscription_id": SUB, "customer_id": "CUST1", "order_id": OID_MON,
@@ -82,15 +85,48 @@ class FakePay:
             raise square_api.PaymentError("We couldn't find a payment for this link.")
         o = self.orders[oid]
         out = {"order_id": oid, "website": o["website"], "payment_id": "PAY" + oid[-10:], "amount": 2900,
-               "created": time.time() - 60, "buyer_email": "buyer-" + oid[-3:].lower() + "@example.com",
-               "refunded": o.get("refunded", False), "delivered": False, "order_version": 3,
-               "customer_id": "CUST1"}
+               "created": o.get("created", JAN1 - 40 * DAY),
+               "buyer_email": "buyer-" + oid[-3:].lower() + "@example.com",
+               "refunded": o.get("refunded", False), "delivered": o.get("delivered", False), "order_version": 3,
+               "customer_id": "CUST1", "ready_mailed": oid in self.ready,
+               "monitor_state": self._state(oid)}
         if "plan" in o:
             out["plan"] = o["plan"]
         return out
 
+    def _state(self, oid):
+        return dict(self.state.get(oid) or {"last": None, "month": None, "failing": [], "not_measured": []})
+
     def mark_delivered(self, paid):
+        self.orders[paid["order_id"]]["delivered"] = True
         return True
+
+    def set_monitor_state(self, paid, *, last, month, failing, not_measured):
+        self.state_writes.append((paid["order_id"], last, month))
+        self.state[paid["order_id"]] = {"last": float(last), "month": month, "failing": list(failing),
+                                        "not_measured": list(not_measured)}
+        return True
+
+    def mark_ready_mailed(self, paid):
+        self.ready.add(paid["order_id"])
+        return True
+
+    def plan_info(self, plan_id):
+        if plan_id == "monitor":
+            return {"id": "monitor", "label": "Monthly Monitoring", "cents": 1900, "first_cents": 2900,
+                    "kind": "subscription", "mode": "full", "available": True}
+        return None
+
+    def refund(self, paid):
+        self.events.append("refund")
+        self.refunds.append(paid["order_id"])
+        return "succeeded"
+
+    def find_orders(self, email):
+        return [dict(f) for f in self.found if f.get("email") == email]
+
+    def find_monitor_orders(self, email):
+        return [dict(f) for f in self.found_monitor if f.get("email") == email]
 
     def create_checkout(self, website, redirect_url, plan="checkup"):
         if plan not in ("checkup", "pro", "monitor"):
@@ -103,13 +139,16 @@ class FakePay:
     def public_plans(self):
         return [{"id": "checkup", "label": "Website Checkup", "cents": 2900, "kind": "one_time", "available": True},
                 {"id": "pro", "label": "Pro Checkup", "cents": 7900, "kind": "one_time", "available": True},
-                {"id": "monitor", "label": "Monthly Monitoring", "cents": 1900, "kind": "subscription",
-                 "available": False}]
+                {"id": "monitor", "label": "Monthly Monitoring", "cents": 1900, "first_cents": 2900,
+                 "kind": "subscription", "available": os.environ.get("FAKE_NO_MONITOR") != "1"}]
 
     def subscription_for_order(self, paid):
         return dict(self.sub) if paid.get("plan") == "monitor" else None
 
     def cancel_subscription(self, sid):
+        if self.cancel_fails:
+            raise square_api.SquareUnavailable("down")
+        self.events.append("cancel")
         self.cancels.append(sid)
         self.sub["canceled_date"] = "2026-02-01"
         return {"status": "ACTIVE", "ends": "2026-02-01"}
@@ -117,7 +156,7 @@ class FakePay:
     def monitored_sites(self):
         if self.unavailable:
             raise square_api.SquareUnavailable("down")
-        return [dict(s) for s in self.sites]
+        return [dict(s, state=self._state(s["order_id"])) for s in self.sites]
 
     def sales_summary(self, days=30, now=None):
         self.summaries.append(days)
@@ -141,8 +180,20 @@ class FakePay:
     def install(self, monkeypatch):
         for name in ("get_paid_order", "mark_delivered", "create_checkout", "public_plans",
                      "subscription_for_order", "cancel_subscription", "monitored_sites", "sales_summary",
-                     "verify_webhook", "event_kind"):
+                     "verify_webhook", "event_kind", "set_monitor_state", "mark_ready_mailed", "plan_info",
+                     "refund", "find_orders", "find_monitor_orders"):
             monkeypatch.setattr(square_api, name, getattr(self, name), raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _quick(monkeypatch):
+    """No 2-second pauses between monitored sites in tests; fresh in-memory server marks."""
+    monkeypatch.setattr(monitor, "PAUSE_BETWEEN_S", 0)
+    with server._lock:
+        for d in (server._refunded, server._not_ours, server._ready_sent):
+            d.clear()
+        server._paid_waiting = 0
+    yield
 
 
 @pytest.fixture
@@ -190,6 +241,7 @@ def api(monkeypatch, db, fake):
         runs.append((mode, url))
         return result(site=url.split("//")[1].strip("/"), findings=[F1])
     monkeypatch.setattr(server, "run_checkup", fake_run)
+    monkeypatch.setattr(server, "_run_runner", lambda mode, url: fake_run(mode, url))
     srv = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -237,24 +289,25 @@ def test_store_creates_missing_dir_and_persists(tmp_path, monkeypatch):
     monkeypatch.setenv("APEX_DATA_DIR", str(d))
     s = store_mod.Store()
     assert os.path.isdir(d) and os.path.exists(d / "apex.sqlite3")
-    s.add_scan(OID_CHECKUP, "shop.example", "B", 80, [F1], at=100)
+    t = time.time() - 100
+    s.add_scan(OID_CHECKUP, "shop.example", "B", 80, [F1], at=t, plan="checkup")
     s.close()
     s2 = store_mod.Store()
-    assert s2.history(OID_CHECKUP) == [{"at": 100, "grade": "B", "score": 80}]
+    assert s2.history(OID_CHECKUP) == [{"at": t, "grade": "B", "score": 80}]
     assert s2.last_scan(OID_CHECKUP)["issues"] == [F1]
     s2.close()
 
 
 def test_store_history_newest_first_max_24(db):
     for i in range(30):
-        db.add_scan(OID_MON, "watch.example", "C", i, [], at=1000 + i)
-    db.add_scan(OID_PRO, "pro.example", "A", 99, [], at=5000)
+        db.add_scan(OID_MON, "watch.example", "C", i, [], at=1000 + i, plan="monitor")
+    db.add_scan(OID_PRO, "pro.example", "A", 99, [], at=time.time())
     h = db.history(OID_MON)
     assert len(h) == 24 and h[0]["score"] == 29 and h[-1]["score"] == 6
     assert [x["at"] for x in h] == sorted((x["at"] for x in h), reverse=True)
     assert db.history(OID_MON, limit=500) == h
     assert db.latest_changes(OID_MON) is None
-    db.add_scan(OID_MON, "watch.example", "B", 50, [], at=9000, changes={"new": [F1], "fixed": []})
+    db.add_scan(OID_MON, "watch.example", "B", 50, [], at=9000, changes={"new": [F1], "fixed": []}, plan="monitor")
     assert db.latest_changes(OID_MON) == {"new": [F1], "fixed": []}
     assert db.last_scan("ORDNOTHING00000000") is None and db.history("ORDNOTHING00000000") == []
 
@@ -354,15 +407,16 @@ def test_monitoring_skips_recent_and_rescans_after_25_days(db, fake, capture_mai
 
 
 def test_monitoring_email_is_once_per_subscription_per_month(db, fake, capture_mail, monkeypatch):
-    monkeypatch.setattr(monitor, "RESCAN_AFTER_S", 0)          # force a scan every run
+    monkeypatch.setattr(monitor, "RESCAN_AFTER_S", 0)          # even with no 25-day wait
     run = lambda mode, url: result(site="watch.example")      # noqa: E731
     jan5, jan20, feb2 = JAN1 + 4 * DAY, JAN1 + 19 * DAY, JAN1 + 32 * DAY
     assert monitor.run_monitoring(run, now=jan5, store=db)["emails_sent"] == 1
-    c = monitor.run_monitoring(run, now=jan20, store=db)
-    assert c["scanned"] == 1 and c["emails_sent"] == 0 and c["emails_skipped"] == 1
+    c = monitor.run_monitoring(run, now=jan20, store=db)       # this month's email already went out
+    assert c["scanned"] == 0 and c["emails_sent"] == 0 and c["skipped_recent"] == 1
     assert monitor.run_monitoring(run, now=feb2, store=db)["emails_sent"] == 1
     assert len(capture_mail) == 2
     assert db.email_sent(f"monitor:{SUB}:2026-01") and db.email_sent(f"monitor:{SUB}:2026-02")
+    assert [w[2] for w in fake.state_writes] == ["2026-01", "2026-02"]
 
 
 def test_monitoring_failed_send_can_retry(db, fake, capture_mail, monkeypatch):
@@ -371,6 +425,7 @@ def test_monitoring_failed_send_can_retry(db, fake, capture_mail, monkeypatch):
     run = lambda mode, url: result(site="watch.example")      # noqa: E731
     assert monitor.run_monitoring(run, now=JAN1, store=db)["emails_sent"] == 0
     assert not db.email_sent(f"monitor:{SUB}:2026-01")         # released for the next try
+    assert fake.state_writes == []                             # nothing durable changed
 
 
 def test_monitoring_unreachable_site_is_not_checked_not_a_fail(db, fake, capture_mail):
@@ -663,7 +718,7 @@ def test_plans_route(api):
 
 @pytest.mark.parametrize("plan,expect", [(None, "checkup"), ("checkup", "checkup"), ("pro", "pro"),
                                          ("monitor", "monitor")])
-def test_checkout_passes_plan(api, plan, expect):
+def test_checkout_passes_plan(api, capture_mail, plan, expect):
     body = {"url": "shop.example"} if plan is None else {"url": "shop.example", "plan": plan}
     code, _, out = call(api["base"], "/api/checkout", body)
     assert code == 200 and set(out) == {"ok", "checkout_url", "order_id"}
@@ -677,10 +732,25 @@ def test_checkout_unknown_plan_never_reaches_square(api, plan):
     assert code == 400 and not out["ok"] and api["fake"].checkouts == []
 
 
-def test_checkout_unavailable_plan(api, monkeypatch):
+def test_checkout_unavailable_plan(api, monkeypatch, capture_mail):
     monkeypatch.setenv("FAKE_NO_MONITOR", "1")
     code, _, out = call(api["base"], "/api/checkout", {"url": "shop.example", "plan": "monitor"})
     assert code == 400 and out["error"] == "That plan isn't available."
+
+
+def test_monitor_not_sold_when_mail_is_off(api, monkeypatch):
+    monkeypatch.delenv("MAIL_BACKEND", raising=False)
+    code, _, body = call(api["base"], "/api/plans")
+    by = {p["id"]: p for p in body["plans"]}
+    assert by["monitor"]["available"] is False and by["checkup"]["available"] is True
+    code, _, out = call(api["base"], "/api/checkout", {"url": "shop.example", "plan": "monitor"})
+    assert code == 400 and out["error"] == "That plan isn't available." and api["fake"].checkouts == []
+    # with buyer emails on it is for sale, with both prices
+    for k, v in (("SELFSERVE_TEST_ALLOW_LOOPBACK", "1"), ("MAIL_BACKEND", "capture"),
+                 ("MAIL_FROM", "checkup@apex.example")):
+        monkeypatch.setenv(k, v)
+    by = {p["id"]: p for p in call(api["base"], "/api/plans")[2]["plans"]}
+    assert by["monitor"]["available"] is True and (by["monitor"]["first_cents"], by["monitor"]["cents"]) == (2900, 1900)
 
 
 @pytest.mark.parametrize("oid,mode", [(OID_PRO, "pro"), (OID_CHECKUP, "full"), (OID_MON, "full"), (OID_OLD, "full")])
@@ -698,13 +768,15 @@ def test_paid_report_uses_plan_mode_and_records_history(api, oid, mode):
 
 def test_dashboard_checkup(api):
     db = api["db"]
-    db.add_scan(OID_CHECKUP, "shop.example", "C", 70, [F1], at=100)
-    db.add_scan(OID_CHECKUP, "shop.example", "B", 80, [], at=200, changes={"new": [], "fixed": [F1]})
+    t = time.time() - 1000
+    db.add_scan(OID_CHECKUP, "shop.example", "C", 70, [F1], at=t, plan="checkup")
+    db.add_scan(OID_CHECKUP, "shop.example", "B", 80, [], at=t + 100, changes={"new": [], "fixed": [F1]},
+                plan="checkup")
     code, h, body = call(api["base"], "/api/dashboard?order_id=" + OID_CHECKUP)
     assert code == 200 and h["Cache-Control"] == "no-store"
-    assert body == {"ok": True, "site": "shop.example", "plan": "checkup",
+    assert body == {"ok": True, "site": "shop.example", "plan": "checkup", "refunded": False,
                     "report_path": "report.html?order_id=" + OID_CHECKUP, "subscription": None,
-                    "history": [{"at": 200, "grade": "B", "score": 80}, {"at": 100, "grade": "C", "score": 70}],
+                    "history": [{"at": t + 100, "grade": "B", "score": 80}, {"at": t, "grade": "C", "score": 70}],
                     "latest_changes": {"new": [], "fixed": [F1]}}
 
 
@@ -808,10 +880,10 @@ def test_admin_summary(api, capture_mail):
 def test_admin_run_monitoring_202_then_409(api, monkeypatch, capture_mail):
     gate = threading.Event()
 
-    def slow(mode, url, pool=None):
+    def slow(mode, url):
         gate.wait(10)
         return result(site="watch.example", findings=[F2])
-    monkeypatch.setattr(server, "run_checkup", slow)
+    monkeypatch.setattr(server, "_run_runner", slow)          # monitoring takes paid workers itself
     code, h, body = call(api["base"], "/api/admin/run-monitoring", method="POST", raw=b"", headers=bearer())
     assert code == 202 and body == {"ok": True, "started": True} and h["Cache-Control"] == "no-store"
     code, _, body = call(api["base"], "/api/admin/run-monitoring", method="POST", raw=b"", headers=bearer())
@@ -905,3 +977,298 @@ def test_monitor_workflow_is_gated_on_secrets():
     assert yml.count("-X POST") == 1 and "/api/admin/run-monitoring" in yml
     assert "nothing to do" in yml and "exit 0" in yml
     assert "Bearer $APEX_ADMIN_TOKEN\" " not in yml            # token is never on a curl command line
+
+
+# ---------------------------------------------------------------- review fixes (round 1)
+
+def unreachable(oid):
+    """The paid run could not reach the site: the automatic refund is allowed."""
+    with server._lock:
+        server._fatal[oid] = time.time()
+
+
+def test_refund_of_monitor_order_cancels_subscription_first(api):
+    unreachable(OID_MON)
+    code, _, body = call(api["base"], "/api/refund", {"order_id": OID_MON})
+    assert code == 200 and body == {"ok": True, "status": "succeeded"}
+    assert api["fake"].events == ["cancel", "refund"] and api["fake"].cancels == [SUB]
+    # one-time plans: no subscription involved
+    unreachable(OID_CHECKUP)
+    assert call(api["base"], "/api/refund", {"order_id": OID_CHECKUP})[0] == 200
+    assert api["fake"].events == ["cancel", "refund", "refund"]
+
+
+def test_refund_of_monitor_order_refused_when_cancel_fails(api, monkeypatch):
+    unreachable(OID_MON)
+    api["fake"].cancel_fails = True
+    code, _, body = call(api["base"], "/api/refund", {"order_id": OID_MON})
+    assert code == 503 and "renewal" in body["error"] and "nothing was refunded" in body["error"]
+    assert api["fake"].refunds == []
+    # no subscription found: refused too (a refund must never leave the renewal running)
+    api["fake"].cancel_fails = False
+    monkeypatch.setattr(square_api, "subscription_for_order", lambda paid: None)
+    assert call(api["base"], "/api/refund", {"order_id": OID_MON})[0] == 503 and api["fake"].refunds == []
+    # an already-cancelled subscription: the refund goes ahead without cancelling twice
+    monkeypatch.setattr(square_api, "subscription_for_order",
+                        lambda paid: dict(api["fake"].sub, canceled_date="2026-02-01"))
+    assert call(api["base"], "/api/refund", {"order_id": OID_MON})[0] == 200
+    assert api["fake"].refunds == [OID_MON] and api["fake"].cancels == []
+
+
+def test_refunded_monitor_order_still_gets_dashboard_and_cancel(api):
+    api["fake"].orders[OID_MON]["refunded"] = True
+    code, _, body = call(api["base"], "/api/dashboard?order_id=" + OID_MON)
+    assert code == 200 and body["refunded"] is True and body["plan"] == "monitor"
+    assert body["report_path"] is None and body["subscription"]["status"] == "ACTIVE"
+    code, _, body = call(api["base"], "/api/cancel", {"order_id": OID_MON})
+    assert code == 200 and body["ends"] == "2026-02-01" and api["fake"].cancels == [SUB]
+    assert call(api["base"], "/api/report?order_id=" + OID_MON)[0] == 402      # the report itself is gone
+
+
+def test_no_cached_monitoring_result_for_refunded_orders(api, db):
+    unreachable(OID_MON)
+    assert call(api["base"], "/api/refund", {"order_id": OID_MON})[0] == 200
+    server._monitor_result(OID_MON, result(site="watch.example"))     # a run that was already going
+    assert server._cached(OID_MON) is None
+    # and the monitoring run itself leaves a refunded order alone (Square says refunded)
+    api["fake"].orders[OID_MON]["refunded"] = True
+    got = []
+    c = monitor.run_monitoring(lambda m, u: result(), now=JAN1, store=db, on_result=lambda o, r: got.append(o))
+    assert c["sites"] == 0 and c["scanned"] == 0 and got == [] and db.last_scan(OID_MON) is None
+
+
+def test_monitoring_with_a_fresh_store_every_day_emails_once_a_month(fake, capture_mail, tmp_path):
+    """Render's free disk is wiped on every redeploy: the monthly marker lives on the Square order."""
+    scans = []
+
+    def run(mode, url):
+        scans.append(url)
+        return result(site="watch.example", findings=[F1])
+    for day in range(75):
+        st = store_mod.Store(str(tmp_path / ("day%d" % day) / "apex.sqlite3"))
+        try:
+            monitor.run_monitoring(run, now=JAN1 + day * DAY + 3600, store=st)
+        finally:
+            st.close()
+    months = [w[2] for w in fake.state_writes]
+    assert months == ["2026-01", "2026-02", "2026-03"] and len(capture_mail) == 3 and len(scans) == 3
+    assert fake.state[OID_MON]["failing"] == ["1.1"]
+
+
+def test_failed_monthly_send_is_retried_the_next_day(fake, capture_mail, tmp_path, monkeypatch):
+    real_send, tries = mailer.send, []
+
+    def flaky(kind, to, **kw):
+        tries.append(kind)
+        return False if len(tries) == 1 else real_send(kind, to, **kw)
+    monkeypatch.setattr(mailer, "send", flaky)
+    counts = []
+    for day in range(4):
+        st = store_mod.Store(str(tmp_path / ("d%d" % day) / "apex.sqlite3"))     # fresh disk each day
+        counts.append(monitor.run_monitoring(lambda m, u: result(site="watch.example"),
+                                             now=JAN1 + day * DAY, store=st))
+        st.close()
+    assert [c["scanned"] for c in counts] == [1, 1, 0, 0]
+    assert [c["emails_sent"] for c in counts] == [0, 1, 0, 0]
+    assert len(tries) == 2 and len(capture_mail) == 1 and len(fake.state_writes) == 1
+
+
+def test_diff_never_calls_a_not_measured_check_fixed_or_new():
+    prev = {"at": 1, "score": 70, "issues": [F1, F2], "not_measured": ["4.1"]}
+    # 1.1 not measured now (not "fixed"); 4.1 failing now but not measured before (not "new")
+    d = monitor.diff(prev, [F2, F3], "C", 70, ["1.1"])
+    assert d["fixed"] == [] and d["new"] == []
+    d = monitor.diff(prev, [F3], "C", 75, [])
+    assert d["fixed"] == [F1, F2] and d["new"] == []
+    res = result(findings=[F1])
+    res["report"]["not_measured"] = [{"id": "3.7", "label": "x", "reason": "limit"}]
+    res["report"]["pages"] = [{"path": "/a", "issues": [], "not_measured": [{"id": "p.h1"}]}]
+    assert monitor.not_measured_of(res) == ["3.7", "page:/a:p.h1"]
+
+
+def test_monitoring_diff_uses_the_emailed_baseline_from_square(fake, capture_mail, tmp_path):
+    fake.state[OID_MON] = {"last": JAN1 - 30 * DAY, "month": "2025-12", "failing": ["1.1", "2.3"],
+                           "not_measured": ["4.1"]}
+    st = store_mod.Store(str(tmp_path / "x" / "apex.sqlite3"))              # empty disk: no local copy
+    res = result(site="watch.example", findings=[F3])
+    res["report"]["not_measured"] = [{"id": "2.3"}]
+    res["report"]["passed"] = [{"id": "1.1", "title": "Page loads slowly"}]
+    monitor.run_monitoring(lambda m, u: res, now=JAN1, store=st)
+    ch = st.latest_changes(OID_MON)
+    assert [i["id"] for i in ch["fixed"]] == ["1.1"] and ch["new"] == []    # 2.3 not measured, 4.1 was not
+    assert ch["fixed"][0]["title"] == "Page loads slowly"
+    st.close()
+
+
+def test_buyer_report_views_do_not_reset_the_monitoring_clock(api, db, fake):
+    code, _, _ = call(api["base"], "/api/report?order_id=" + OID_MON)            # the purchase report
+    assert code == 200 and wait_for(lambda: fake.state_writes)
+    assert len(fake.state_writes) == 1 and fake.state_writes[0][2] is None
+    first_at = fake.state[OID_MON]["last"]
+    with db._lock:                                                              # make it a month old
+        db._db.execute("UPDATE scans SET at=at-? WHERE order_id=?", (26 * DAY, OID_MON))
+    fake.state[OID_MON]["last"] = first_at - 26 * DAY
+    server._reports.clear()
+    assert call(api["base"], "/api/report?order_id=" + OID_MON)[0] == 200       # the buyer opens it again
+    time.sleep(0.3)
+    assert len(fake.state_writes) == 1                                          # clock not moved
+    assert db.last_scan(OID_MON)["source"] == "view"
+    assert db.baseline(OID_MON)["source"] == "report"                           # nor the baseline
+    c = monitor.run_monitoring(lambda m, u: result(site="watch.example"), store=db)
+    assert c["scanned"] == 1                                                    # due, despite the view
+
+
+def test_report_ready_from_page_load_when_prewarm_was_busy_and_once_across_a_wipe(api, capture_mail, monkeypatch,
+                                                                                     tmp_path):
+    busy = {"on": True}
+
+    def run(mode, url, pool=None):
+        if busy["on"]:
+            return dict(server.BUSY)
+        return result(site="watch.example")
+    monkeypatch.setattr(server, "run_checkup", run)
+    assert hook(api["base"], {"type": "payment.updated", "order_id": OID_MON})[0] == 200
+    time.sleep(0.5)
+    assert capture_mail == []                                                   # prewarm got "busy"
+    busy["on"] = False
+    assert call(api["base"], "/api/report?order_id=" + OID_MON)[0] == 200       # the buyer's own page load
+    assert wait_for(lambda: len(capture_mail) == 1)
+    body = capture_mail[0].get_content()
+    assert capture_mail[0]["To"] == "buyer-mmm@example.com"
+    assert "$29 for the first month" in body and "then $19 a month" in body
+    assert "renews every month until you cancel" in body and "end of the month you have already paid" in body
+    assert ORIGIN + "/dashboard.html?order_id=" + OID_MON in body
+    assert wait_for(lambda: OID_MON in api["fake"].ready)
+    # restart on a wiped disk: no second email (the mark is on the Square order)
+    fresh = store_mod.Store(str(tmp_path / "wiped" / "apex.sqlite3"))
+    store_mod.set_default(fresh)
+    with server._lock:
+        server._reports.clear()
+        server._ready_sent.clear()
+    assert call(api["base"], "/api/report?order_id=" + OID_MON)[0] == 200
+    assert hook(api["base"], {"type": "payment.updated", "order_id": OID_MON})[0] == 200
+    time.sleep(0.5)
+    assert len(capture_mail) == 1
+    fresh.close()
+
+
+def test_report_ready_for_one_time_plan_has_no_renewal_terms(api, capture_mail):
+    assert call(api["base"], "/api/report?order_id=" + OID_CHECKUP)[0] == 200
+    assert wait_for(lambda: len(capture_mail) == 1)
+    assert "renews" not in capture_mail[0].get_content()
+
+
+def test_a_waiting_buyer_gets_a_worker_before_the_next_monitoring_site(monkeypatch):
+    sem = threading.BoundedSemaphore(1)
+    monkeypatch.setitem(server.POOLS, "paid", sem)
+    order = []
+
+    def runner(mode, url):
+        order.append(url)
+        time.sleep(0.2)
+        return result()
+    monkeypatch.setattr(server, "_run_runner", runner)
+    assert sem.acquire(timeout=1)                         # a scan is running
+    mon = threading.Thread(target=server.background_run_checkup, args=("full", "https://monitor.example/"))
+    mon.start()
+    time.sleep(0.4)                                       # monitoring is waiting for the worker
+    buyer = threading.Thread(target=server.run_checkup, args=("full", "https://buyer.example/"))
+    buyer.start()
+    assert wait_for(lambda: server._paid_waiting == 1)
+    sem.release()
+    buyer.join(10)
+    mon.join(10)
+    assert order == ["https://buyer.example/", "https://monitor.example/"]
+    assert server._paid_waiting == 0
+
+
+def test_monitoring_pauses_between_sites(fake, db, monkeypatch, capture_mail):
+    monkeypatch.setattr(monitor, "PAUSE_BETWEEN_S", 0.3)
+    fake.sites = fake.sites + [dict(fake.sites[0], subscription_id="SUB2", order_id=OID_PRO,
+                                    website="https://pro.example/")]
+    times = []
+
+    def run(mode, url):
+        times.append(time.time())
+        return result()
+    assert monitor.run_monitoring(run, now=JAN1, store=db)["scanned"] == 2
+    assert times[1] - times[0] >= 0.3
+
+
+def test_webhook_prewarm_does_not_spend_the_paid_ip_bucket(api, monkeypatch):
+    monkeypatch.setitem(server.LIMITS, "paid-ip", (1, 3600))
+    for oid in (OID_CHECKUP, OID_PRO, OID_OLD):
+        assert hook(api["base"], {"type": "payment.updated", "order_id": oid})[0] == 200
+    assert wait_for(lambda: len(api["runs"]) == 3)
+    assert call(api["base"], "/api/report?order_id=" + OID_MON)[0] == 200      # the buyer's own bucket is untouched
+
+
+def test_webhook_for_a_non_apex_order_asks_square_once(api):
+    other = "ORDSHOPSALE00000000000001"
+    before = api["fake"].order_calls
+    for _ in range(4):
+        assert hook(api["base"], {"type": "payment.updated", "order_id": other})[0] == 200
+        time.sleep(0.2)
+    assert api["fake"].order_calls - before == 1 and api["runs"] == []
+
+
+def test_find_emails_the_links_when_mail_is_on(api, capture_mail):
+    fake = api["fake"]
+    fake.found = [{"email": "buyer@shop.example", "order_id": OID_CHECKUP, "website": "https://shop.example/",
+                   "created": JAN1}]
+    fake.found_monitor = [{"email": "buyer@shop.example", "order_id": OID_MON, "website": "https://www.shop.example",
+                           "created": JAN1 - 200 * DAY}]                   # older than 30 days: still found
+    code, _, body = call(api["base"], "/api/find", {"email": "Buyer@Shop.example", "website": "shop.example"})
+    assert code == 200 and body == {"ok": True, "emailed": True}
+    assert wait_for(lambda: len(capture_mail) == 1)
+    m = capture_mail[0]
+    text = m.get_content()
+    assert m["To"] == "buyer@shop.example" and m["Subject"] == "Your Apex Forge checkup links"
+    for oid in (OID_CHECKUP, OID_MON):
+        assert ORIGIN + "/report.html?order_id=" + oid in text and ORIGIN + "/dashboard.html?order_id=" + oid in text
+    # nothing found: the very same answer, and no email
+    for email, site in (("buyer@shop.example", "other.example"), ("nobody@shop.example", "shop.example")):
+        code2, _, body2 = call(api["base"], "/api/find", {"email": email, "website": site})
+        assert (code2, body2) == (code, body)
+    time.sleep(0.4)
+    assert len(capture_mail) == 1
+    assert call(api["base"], "/api/find", {"email": "not an email", "website": "shop.example"})[0] == 400
+
+
+def test_find_returns_links_when_mail_is_off(api, monkeypatch):
+    monkeypatch.delenv("MAIL_BACKEND", raising=False)
+    api["fake"].found = [{"email": "buyer@shop.example", "order_id": OID_CHECKUP,
+                          "website": "https://shop.example/", "created": JAN1}]
+    code, _, body = call(api["base"], "/api/find", {"email": "buyer@shop.example", "website": "shop.example"})
+    assert code == 200 and body["reports"][0]["path"] == "report.html?order_id=" + OID_CHECKUP
+    assert call(api["base"], "/api/find", {"email": "buyer@shop.example", "website": "x.example"})[0] == 404
+
+
+def test_store_deletes_one_time_scans_after_30_days(db):
+    now = time.time()
+    db.add_scan(OID_CHECKUP, "shop.example", "B", 80, [], at=now - 31 * DAY, plan="checkup")
+    db.add_scan(OID_PRO, "pro.example", "B", 80, [], at=now - 31 * DAY, plan="pro")
+    db.add_scan(OID_OLD, "old.example", "B", 80, [], at=now - 31 * DAY)             # old row: no plan
+    db.add_scan(OID_MON, "watch.example", "B", 80, [], at=now - 31 * DAY, plan="monitor")
+    db.add_scan(OID_CHECKUP, "shop.example", "A", 90, [], at=now - 1 * DAY, plan="checkup")
+    assert db.purge_old() == 3
+    assert [h["score"] for h in db.history(OID_CHECKUP)] == [90]
+    assert db.history(OID_PRO) == [] and db.history(OID_OLD) == [] and len(db.history(OID_MON)) == 1
+
+
+def test_store_folder_and_file_are_private(tmp_path, monkeypatch):
+    d = tmp_path / "data"
+    d.mkdir(mode=0o755)
+    os.chmod(d, 0o755)
+    old = os.umask(0o022)
+    try:
+        monkeypatch.setenv("APEX_DATA_DIR", str(d))
+        s = store_mod.Store()
+        s.add_scan(OID_MON, "watch.example", "B", 80, [], plan="monitor")
+    finally:
+        os.umask(old)
+    assert os.stat(d).st_mode & 0o777 == 0o700
+    for f in ("apex.sqlite3", "apex.sqlite3-wal", "apex.sqlite3-shm"):
+        if os.path.exists(d / f):
+            assert os.stat(d / f).st_mode & 0o777 == 0o600, f
+    s.close()
