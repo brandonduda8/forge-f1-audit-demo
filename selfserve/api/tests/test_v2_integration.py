@@ -88,7 +88,7 @@ def wait_for(cond, timeout=150):
 def world(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     sq = FakeSquare()
-    var = sq.add_plan_variation(2900)
+    var = sq.add_plan_variation()
     site, site_url = serve_site("example-roofing")
     env = {"SITE_ORIGIN": ORIGIN, "SQUARE_ACCESS_TOKEN": TOKEN, "SQUARE_ENV": "sandbox",
            "SQUARE_LOCATION_ID": LOC, "SQUARE_API_BASE": sq.base, "SQUARE_WEBHOOK_SIGNATURE_KEY": SIG_KEY,
